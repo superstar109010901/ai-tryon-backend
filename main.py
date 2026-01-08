@@ -1,14 +1,13 @@
 """
 Main FastAPI application for Virtual Clothing Try-On
-This backend handles image uploads, processes them with SDXL models,
-and returns generated images with different clothing styles.
+This backend handles image uploads, sends them to Vast.ai Stable Diffusion API,
+and returns generated images with clothing replacement.
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from contextlib import asynccontextmanager
-from typing import Optional
 import uvicorn
 import os
 import sys
@@ -18,66 +17,47 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 from image_processor import ImageProcessor
-from model_manager import ModelManager
+from config import VAST_AI_SD_URL
 
-# Global flag to track if models are loaded
-models_loaded = False
-model_manager = None
+# Global image processor instance
 image_processor = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Lifespan context manager: Initialize models on startup, cleanup on shutdown.
-    This ensures models are ready before processing requests.
+    Lifespan context manager: Initialize Vast.ai API client on startup.
     """
-    global models_loaded, model_manager, image_processor
+    global image_processor
     
-    # Startup: Initialize models
+    # Startup: Initialize Vast.ai API client
     try:
         print("=" * 60)
-        print("Initializing Virtual Try-On Backend for GPU Server...")
+        print("Initializing Virtual Try-On Backend...")
         print("=" * 60)
+        print(f"Vast.ai SD API URL: {VAST_AI_SD_URL}")
         
-        model_manager = ModelManager()
-        image_processor = ImageProcessor(model_manager)
+        image_processor = ImageProcessor(VAST_AI_SD_URL)
         
-        # Check and download models if needed
-        print("Checking model availability...")
-        await model_manager.ensure_models_available()
-        
-        # Preload models to GPU immediately (optimized for GPU servers)
-        # This ensures models are ready when first request arrives
-        print("Loading models to GPU...")
-        model_manager.load_models()
-        
-        models_loaded = True
         print("=" * 60)
-        print("✅ Models loaded successfully on GPU!")
-        print("✅ Server ready to process requests")
+        print("✅ Backend initialized successfully!")
+        print("✅ Ready to process requests via Vast.ai API")
         print("=" * 60)
     except Exception as e:
-        print(f"⚠️  Warning: Could not load models: {e}")
-        print("Server will run in placeholder mode for testing")
-        models_loaded = False
-        # Still initialize managers for placeholder mode
-        if model_manager is None:
-            model_manager = ModelManager()
-            image_processor = ImageProcessor(model_manager)
+        print(f"⚠️  Warning: Could not initialize: {e}")
+        print("Server may not function correctly")
+        image_processor = None
     
     yield  # Application runs here
     
     # Shutdown: Cleanup (optional)
-    if model_manager:
-        model_manager.unload_models()
-        print("Models unloaded")
+    print("Shutting down backend...")
 
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(
     title="Virtual Clothing Try-On API",
-    description="API for generating virtual try-on images using SDXL",
+    description="API for generating virtual try-on images using Vast.ai Stable Diffusion API",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -99,43 +79,40 @@ async def root():
     return {
         "message": "Virtual Clothing Try-On API",
         "status": "running",
-        "models_loaded": models_loaded
+        "vast_ai_url": VAST_AI_SD_URL,
+        "processor_ready": image_processor is not None
     }
 
 
 @app.get("/health")
 async def health_check():
     """
-    Health check endpoint to verify server and model status.
-    Frontend can call this to check if models are ready.
+    Health check endpoint to verify server and Vast.ai API connection.
+    Frontend can call this to check if backend is ready.
     """
-    gpu_available = False
-    if model_manager:
-        gpu_available = model_manager.check_gpu_available()
-    
     return {
         "status": "healthy",
-        "models_loaded": models_loaded,
-        "gpu_available": gpu_available
+        "vast_ai_url": VAST_AI_SD_URL,
+        "processor_ready": image_processor is not None
     }
 
 
 @app.post("/generate")
 async def generate_tryon(
-    file: UploadFile = File(..., description="Person image to process"),
-    style: str = Form(..., description="Clothing style: casual, formal, sportswear, streetwear, or random")
+    file: UploadFile = File(..., description="Person image to process")
 ):
     """
     Main endpoint for generating virtual try-on images.
     
-    Process:
-    1. Receives uploaded person image and selected style
-    2. Processes image with SDXL models
-    3. Returns generated image with new clothing
+    Process Flow:
+    1. Frontend sends image (base64/binary)
+    2. Backend injects STATIC_PROMPT and fixed SD parameters
+    3. Backend calls Vast.ai SD API (img2img)
+    4. Stable Diffusion returns generated image
+    5. Backend returns image to frontend
     
     Args:
         file: Uploaded image file (JPEG, PNG)
-        style: Selected clothing style
     
     Returns:
         JSON with generated image data or error message
@@ -145,51 +122,34 @@ async def generate_tryon(
         if not file.content_type or not file.content_type.startswith('image/'):
             raise HTTPException(status_code=400, detail="File must be an image")
         
-        # Validate style
-        valid_styles = ["casual", "formal", "sportswear", "streetwear", "random"]
-        style_lower = style.lower()
-        if style_lower not in valid_styles:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Style must be one of: {', '.join(valid_styles)}"
-            )
-        
         # Read uploaded image
         image_data = await file.read()
         
-        # Process image with SDXL
-        # If models aren't loaded, use placeholder mode
-        if not models_loaded:
-            # Return placeholder response for testing without GPU
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "success": True,
-                    "message": "Placeholder mode - models not loaded",
-                    "style": style_lower,
-                    "image_url": None,
-                    "placeholder": True
-                }
+        # Validate image processor is initialized
+        if image_processor is None:
+            raise HTTPException(
+                status_code=503, 
+                detail="Image processor not initialized. Check Vast.ai API connection."
             )
         
-        # Process the image with actual SDXL models
-        if image_processor is None:
-            raise HTTPException(status_code=503, detail="Image processor not initialized")
-        
-        result = await image_processor.process_image(image_data, style_lower)
+        # Process the image via Vast.ai API
+        # ImageProcessor handles: image → Vast.ai API → generated image
+        result = await image_processor.process_image(image_data)
         
         if result["success"]:
             return JSONResponse(
                 status_code=200,
                 content={
                     "success": True,
-                    "style": style_lower,
                     "image_url": result["image_url"],
-                    "message": "Image generated successfully"
+                    "message": "Image generated successfully via Vast.ai API"
                 }
             )
         else:
-            raise HTTPException(status_code=500, detail=result.get("error", "Processing failed"))
+            raise HTTPException(
+                status_code=500, 
+                detail=result.get("error", "Processing failed")
+            )
             
     except HTTPException:
         raise
@@ -222,13 +182,12 @@ async def download_image(filename: str):
 
 if __name__ == "__main__":
     # Run the server
-    # Optimized for GPU server deployment (Vast.ai, RunPod, etc.)
+    # Backend acts as middleware between frontend and Vast.ai SD API
     # host="0.0.0.0" allows external connections from frontend
-    # reload=False for production (better performance on GPU servers)
+    # reload=False for production
     uvicorn.run(
         "main:app",
         host="0.0.0.0",  # Accept connections from any IP (required for remote access)
-        port=8080,        # Using port 8080 (maps to external port 36602 on Vast.ai)
-        reload=False      # Disable reload for production GPU servers (better performance)
+        port=8000,        # Backend port (maps to external port 36602 on Vast.ai)
+        reload=False      # Disable reload for production
     )
-
