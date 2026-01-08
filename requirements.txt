@@ -1,0 +1,30 @@
+# FastAPI and server dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Image processing
+Pillow==10.1.0
+numpy==1.24.3
+
+# PyTorch and CUDA support (for GPU)
+# For Vast.ai GPU servers, use CUDA-enabled version
+torch==2.1.0
+torchvision==0.16.0
+
+# Stable Diffusion XL models
+# Using compatible versions to avoid dependency conflicts
+diffusers==0.21.4
+transformers==4.35.0
+accelerate==0.24.1
+safetensors==0.4.1
+
+# HuggingFace Hub for model downloads
+# Version must be <0.18 to satisfy tokenizers dependency
+# Using 0.17.3 which satisfies all constraints: >=0.16.4 and <0.18
+huggingface-hub>=0.16.4,<0.18
+
+# Optional: For better image processing
+# opencv-python==4.8.1.78  # Uncomment if you want to use OpenCV for better masking
+# mediapipe==0.10.7  # Uncomment for pose estimation
+
