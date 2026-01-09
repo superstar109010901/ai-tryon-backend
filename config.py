@@ -10,8 +10,12 @@ import os
 #   VAST_AI_SD_URL = "http://74.48.140.178:8081"  # SD API external port on Vast.ai
 VAST_AI_SD_URL = os.getenv("VAST_AI_SD_URL", "http://localhost:8081")
 
-# ControlNet Configuration (optional)
-CONTROLNET_ENABLED = os.getenv("CONTROLNET_ENABLED", "false").lower() == "true"
-CONTROLNET_MODULE = os.getenv("CONTROLNET_MODULE", "openpose")  # e.g., "openpose", "canny", "depth"
-CONTROLNET_MODEL = os.getenv("CONTROLNET_MODEL", "control_v11p_sd15_openpose")
-CONTROLNET_WEIGHT = float(os.getenv("CONTROLNET_WEIGHT", "1.0"))
+# ControlNet Configuration
+# ControlNet with OpenPose is used to preserve pose and body structure
+CONTROLNET_ENABLED = os.getenv("CONTROLNET_ENABLED", "true").lower() == "true"  # Enabled by default
+CONTROLNET_MODULE = os.getenv("CONTROLNET_MODULE", "openpose")  # OpenPose for pose preservation
+CONTROLNET_MODEL = os.getenv("CONTROLNET_MODEL", "control_sd15_openpose")  # SD15 OpenPose model
+CONTROLNET_WEIGHT = float(os.getenv("CONTROLNET_WEIGHT", "1.0"))  # Locks pose
+CONTROLNET_GUIDANCE_START = float(os.getenv("CONTROLNET_GUIDANCE_START", "0.0"))
+CONTROLNET_GUIDANCE_END = float(os.getenv("CONTROLNET_GUIDANCE_END", "0.9"))
+CONTROLNET_CONTROL_MODE = os.getenv("CONTROLNET_CONTROL_MODE", "Balanced")

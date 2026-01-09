@@ -13,17 +13,21 @@ import uuid
 from datetime import datetime
 
 from vast_ai_client import VastAIClient
-from config import CONTROLNET_ENABLED, CONTROLNET_MODULE, CONTROLNET_MODEL, CONTROLNET_WEIGHT
+from config import (
+    CONTROLNET_ENABLED, CONTROLNET_MODULE, CONTROLNET_MODEL, CONTROLNET_WEIGHT,
+    CONTROLNET_GUIDANCE_START, CONTROLNET_GUIDANCE_END, CONTROLNET_CONTROL_MODE
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
-STATIC_PROMPT = "person wearing clean white shirt, realistic fabric, natural lighting"
+# Focused on preserving person identity while changing only clothing
+STATIC_PROMPT = "a realistic photo of the same person wearing a clean white cotton shirt, natural fabric folds, realistic lighting, same face, same body, same pose, clothing replacement only"
 
 # Negative prompt to avoid unwanted changes (especially face changes)
-NEGATIVE_PROMPT = "face change, different face, deformed face, altered identity, different person, bad anatomy"
+NEGATIVE_PROMPT = "different face, face change, distorted face, new person, body deformation, extra limbs, bad anatomy, blur, low quality"
 
 
 
@@ -80,26 +84,29 @@ class ImageProcessor:
             # Black (0) = area SD MUST NOT change (face, hair, body)
             mask = self.generate_clothing_mask(image)
             
-            # Generate image using Vast.ai img2img API with inpainting
-            # Using inpainting with mask to preserve face and only change clothing
+            # Generate image using Vast.ai img2img API with inpainting + ControlNet
+            # Using inpainting with mask + ControlNet OpenPose to preserve face, pose, and only change clothing
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.32,  # Fixed parameter
-                steps=25,                  # Fixed parameter
-                cfg_scale=7,               # Fixed parameter
+                denoising_strength=0.48,  # Enough to change clothes, not face
+                steps=25,                  # Stable quality, low VRAM
+                cfg_scale=5,               # Prevents over-forcing prompt
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width
                 height=768,                # Fixed height
                 inpainting_fill=1,         # Inpainting fill mode
-                inpaint_full_res=True,     # Full resolution inpainting
-                inpaint_full_res_padding=32,  # Padding for full res
+                inpaint_full_res=True,     # Preserves face details
+                inpaint_full_res_padding=32,  # Smooth cloth boundaries
                 controlnet_enabled=CONTROLNET_ENABLED,
-                controlnet_module=CONTROLNET_MODULE if CONTROLNET_ENABLED else None,
-                controlnet_model=CONTROLNET_MODEL if CONTROLNET_ENABLED else None,
-                controlnet_weight=CONTROLNET_WEIGHT if CONTROLNET_ENABLED else 1.0
+                controlnet_model=CONTROLNET_MODEL if CONTROLNET_ENABLED else "control_sd15_openpose",
+                controlnet_module=CONTROLNET_MODULE if CONTROLNET_ENABLED else "openpose",
+                controlnet_weight=CONTROLNET_WEIGHT if CONTROLNET_ENABLED else 1.0,
+                controlnet_guidance_start=CONTROLNET_GUIDANCE_START if CONTROLNET_ENABLED else 0.0,
+                controlnet_guidance_end=CONTROLNET_GUIDANCE_END if CONTROLNET_ENABLED else 0.9,
+                controlnet_control_mode=CONTROLNET_CONTROL_MODE if CONTROLNET_ENABLED else "Balanced"
             )
             
             # Save generated image temporarily

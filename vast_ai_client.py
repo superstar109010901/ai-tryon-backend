@@ -70,41 +70,49 @@ class VastAIClient:
         prompt: str,
         negative_prompt: str = "",
         mask: Optional[Image.Image] = None,
-        denoising_strength: float = 0.32,
+        denoising_strength: float = 0.48,
         steps: int = 25,
-        cfg_scale: float = 7.0,
+        cfg_scale: float = 5.0,
         sampler_name: str = "DPM++ 2M Karras",
         width: int = 512,
         height: int = 768,
         inpainting_fill: int = 1,
         inpaint_full_res: bool = True,
         inpaint_full_res_padding: int = 32,
-        controlnet_enabled: bool = False,
-        controlnet_module: Optional[str] = None,
-        controlnet_model: Optional[str] = None,
-        controlnet_weight: float = 1.0
+        controlnet_enabled: bool = True,
+        controlnet_module: Optional[str] = "openpose",
+        controlnet_model: Optional[str] = "control_sd15_openpose",
+        controlnet_weight: float = 1.0,
+        controlnet_guidance_start: float = 0.0,
+        controlnet_guidance_end: float = 0.9,
+        controlnet_control_mode: str = "Balanced"
     ) -> Image.Image:
         """
-        Generate image using Vast.ai img2img API with optional inpainting mask.
+        Generate image using Vast.ai img2img API with inpainting mask + ControlNet.
+        
+        Uses img2img + ControlNet + Mask for precise clothing replacement.
         
         Args:
             image: Input PIL Image
             prompt: Positive prompt for generation
             negative_prompt: Negative prompt (what to avoid)
-            mask: Optional mask image for inpainting (white=change, black=preserve)
-            denoising_strength: How much to change the image (0.0-1.0)
-            steps: Number of inference steps
-            cfg_scale: Guidance scale (how closely to follow prompt)
+            mask: Mask image for inpainting (white=change, black=preserve)
+            denoising_strength: How much to change the image (0.0-1.0) - 0.48 for clothes, not face
+            steps: Number of inference steps - 25 for stable quality, low VRAM
+            cfg_scale: Guidance scale (how closely to follow prompt) - 5 prevents over-forcing
             sampler_name: Sampler to use (e.g., "DPM++ 2M Karras")
             width: Output image width
             height: Output image height
-            inpainting_fill: Inpainting fill mode (0=fill, 1=original, 2=latent noise, 3=latent nothing)
-            inpaint_full_res: Use full resolution inpainting
-            inpaint_full_res_padding: Padding for full resolution inpainting
-            controlnet_enabled: Whether to use ControlNet
-            controlnet_module: ControlNet module name (e.g., "openpose")
-            controlnet_model: ControlNet model name (e.g., "control_v11p_sd15_openpose")
-            controlnet_weight: ControlNet weight (0.0-2.0)
+            inpainting_fill: Inpainting fill mode (1=original)
+            inpaint_full_res: Use full resolution inpainting (preserves face details)
+            inpaint_full_res_padding: Padding for full resolution (32 for smooth boundaries)
+            controlnet_enabled: Whether to use ControlNet (True for pose preservation)
+            controlnet_module: ControlNet module name ("openpose" for pose)
+            controlnet_model: ControlNet model name ("control_sd15_openpose")
+            controlnet_weight: ControlNet weight (1.0 locks pose)
+            controlnet_guidance_start: When ControlNet starts (0.0 = from start)
+            controlnet_guidance_end: When ControlNet ends (0.9 = most of generation)
+            controlnet_control_mode: Control mode ("Balanced" for best results)
         
         Returns:
             Generated PIL Image
@@ -126,7 +134,7 @@ class VastAIClient:
                 "height": height
             }
             
-            # Add mask for inpainting if provided
+            # Add mask for inpainting (required for clothing replacement)
             if mask is not None:
                 mask_base64 = self._image_to_base64(mask)
                 payload["mask"] = mask_base64
@@ -134,20 +142,26 @@ class VastAIClient:
                 payload["inpaint_full_res"] = inpaint_full_res
                 payload["inpaint_full_res_padding"] = inpaint_full_res_padding
                 logger.info("Using inpainting with mask (white=change, black=preserve)")
+            else:
+                raise Exception("Mask is required for clothing replacement")
             
-            # Add ControlNet if enabled
+            # Add ControlNet with OpenPose (required for pose preservation)
             if controlnet_enabled and controlnet_module and controlnet_model:
-                payload["alwayson_scripts"] = {
-                    "controlnet": {
-                        "args": [{
-                            "input_image": image_base64,
-                            "module": controlnet_module,
-                            "model": controlnet_model,
-                            "weight": controlnet_weight
-                        }]
-                    }
-                }
+                # Use controlnet_units array format (new API format)
+                payload["controlnet_units"] = [{
+                    "enabled": True,
+                    "model": controlnet_model,
+                    "module": controlnet_module,
+                    "weight": controlnet_weight,
+                    "guidance_start": controlnet_guidance_start,
+                    "guidance_end": controlnet_guidance_end,
+                    "control_mode": controlnet_control_mode,
+                    "input_image": image_base64  # Use original image for pose detection
+                }]
                 logger.info(f"ControlNet enabled: {controlnet_module} / {controlnet_model}")
+                logger.info(f"ControlNet guidance: {controlnet_guidance_start} to {controlnet_guidance_end}, mode: {controlnet_control_mode}")
+            else:
+                logger.warning("ControlNet is disabled - pose may not be preserved accurately")
             
             # Send request to Vast.ai API
             logger.info(f"Sending img2img request to {self.img2img_endpoint}")
