@@ -157,7 +157,7 @@ class VastAIClient:
         prompt: str,
         negative_prompt: str = "",
         mask: Optional[Image.Image] = None,
-        denoising_strength: float = 0.50,
+        denoising_strength: float = 0.55,
         steps: int = 24,
         cfg_scale: float = 5.0,
         sampler_name: str = "DPM++ 2M Karras",
@@ -166,13 +166,15 @@ class VastAIClient:
         inpainting_fill: int = 1,
         inpaint_full_res: bool = True,
         inpaint_full_res_padding: int = 32,
+        mask_blur: int = 8,
         controlnet_enabled: bool = True,
-        controlnet_module: Optional[str] = "openpose",
-        controlnet_model: Optional[str] = "control_sd15_openpose",
-        controlnet_weight: float = 1.0,
+        controlnet_module: Optional[str] = "segmentation",
+        controlnet_model: Optional[str] = "control_v11p_sd15_seg",
+        controlnet_weight: float = 1.2,
         controlnet_guidance_start: float = 0.0,
-        controlnet_guidance_end: float = 0.9,
-        controlnet_control_mode: str = "Balanced"
+        controlnet_guidance_end: float = 0.75,
+        controlnet_control_mode: str = "Balanced",
+        controlnet_pixel_perfect: bool = True
     ) -> Image.Image:
         """
         Generate image using Vast.ai img2img API with inpainting mask + ControlNet.
@@ -221,36 +223,43 @@ class VastAIClient:
                 "height": height
             }
             
-            # Add mask for inpainting (required for clothing replacement)
+            # Add mask for inpainting (REQUIRED - binary clothes-only mask)
+            # White = clothes (can change), Black = protected (face, hair, skin, body)
             if mask is not None:
                 mask_base64 = self._image_to_base64(mask)
                 payload["mask"] = mask_base64
-                payload["inpainting_fill"] = inpainting_fill
-                payload["inpaint_full_res"] = inpaint_full_res
-                payload["inpaint_full_res_padding"] = inpaint_full_res_padding
+                payload["inpainting_fill"] = inpainting_fill  # 1 = original
+                payload["inpaint_full_res"] = inpaint_full_res  # true = full resolution
+                payload["inpaint_full_res_padding"] = inpaint_full_res_padding  # 32
                 payload["inpaint_area"] = 1  # Inpaint masked area only (1 = masked area, 0 = whole picture)
-                payload["mask_blur"] = 0  # No mask blur - strict mask edges (0 = no blur)
-                logger.info("Using inpainting with strict mask (white=change, black=preserve), inpaint_area=1, mask_blur=0")
+                payload["mask_blur"] = mask_blur  # Mask blur 6-10 (8 is middle)
+                logger.info(f"Using inpainting with binary mask (white=clothes, black=protected), inpaint_area=1, mask_blur={mask_blur}")
             else:
-                raise Exception("Mask is required for clothing replacement")
+                raise Exception("Mask is required for clothing replacement - binary clothes-only mask must be provided")
             
-            # Add ControlNet with OpenPose (required for pose preservation)
+            # Add ControlNet segmentation explicitly using alwayson_scripts format
+            # ControlNet must be explicitly enabled in API request, not relying on WebUI defaults
             if controlnet_enabled and controlnet_module and controlnet_model:
-                # Use controlnet_units array format (new API format)
-                payload["controlnet_units"] = [{
-                    "enabled": True,
-                    "model": controlnet_model,
-                    "module": controlnet_module,
-                    "weight": controlnet_weight,
-                    "guidance_start": controlnet_guidance_start,
-                    "guidance_end": controlnet_guidance_end,
-                    "control_mode": controlnet_control_mode,
-                    "input_image": image_base64  # Use original image for pose detection
-                }]
-                logger.info(f"ControlNet enabled: {controlnet_module} / {controlnet_model}")
-                logger.info(f"ControlNet guidance: {controlnet_guidance_start} to {controlnet_guidance_end}, mode: {controlnet_control_mode}")
+                # Use alwayson_scripts.controlnet.args format (explicit ControlNet)
+                payload["alwayson_scripts"] = {
+                    "controlnet": {
+                        "args": [{
+                            "input_image": image_base64,  # Use original image for segmentation
+                            "module": controlnet_module,  # "segmentation"
+                            "model": controlnet_model,  # "control_v11p_sd15_seg"
+                            "weight": controlnet_weight,  # ~1.2
+                            "guidance_start": controlnet_guidance_start,  # 0.0
+                            "guidance_end": controlnet_guidance_end,  # <= 0.8
+                            "control_mode": controlnet_control_mode,  # "Balanced"
+                            "pixel_perfect": controlnet_pixel_perfect,  # true
+                            "enabled": True
+                        }]
+                    }
+                }
+                logger.info(f"ControlNet segmentation enabled: {controlnet_module} / {controlnet_model}")
+                logger.info(f"ControlNet weight: {controlnet_weight}, guidance: {controlnet_guidance_start} to {controlnet_guidance_end}, pixel_perfect: {controlnet_pixel_perfect}")
             else:
-                logger.warning("ControlNet is disabled - pose may not be preserved accurately")
+                logger.warning("ControlNet is disabled - segmentation will not be used during generation")
             
             # Send request to Vast.ai API
             logger.info(f"Sending img2img request to {self.img2img_endpoint}")

@@ -23,11 +23,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
-# Replacement prompt (not descriptive) - tells SD to replace the shirt
-STATIC_PROMPT = "replace the shirt with a plain, solid, pure white cotton shirt"
+# Clothes-only prompt - focuses only on the clothing
+STATIC_PROMPT = "plain white cotton shirt"
 
-# Negative prompt to avoid unwanted changes and enforce white color
-NEGATIVE_PROMPT = "original shirt, original color, gray, black, texture, pattern, logo, shadows, face, skin, neck, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification"
+# Negative prompt - strong exclusion of face, hair, skin, body, identity
+NEGATIVE_PROMPT = "face, hair, skin, body, identity, person, head, neck, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification, original shirt, original color, gray, black, texture, pattern, logo, shadows"
 
 
 
@@ -100,25 +100,26 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.50,  # Increased: enough to change color (0.45-0.55 range)
+                denoising_strength=0.55,  # Fixed: allows clothes changes without affecting face (0.5-0.6 range)
                 steps=24,                  # Moderate steps (20-28 range)
                 cfg_scale=5.0,             # Reduced model authority (4.5-6 range) to prevent face rewriting
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width (lower resolution for better color replacement)
                 height=640,                # Reduced height (was 768) - lower resolution resists pixel preservation
-                inpainting_fill=1,         # Inpainting fill mode
-                inpaint_full_res=True,     # Preserves face details
-                inpaint_full_res_padding=32,  # Smooth cloth boundaries
-                # DISABLE ControlNet during img2img generation
-                # ControlNet should only be used for mask creation, not during generation
-                # If ControlNet stays enabled, it enforces original garment structure/color, blocking the edit
-                controlnet_enabled=False,  # Disabled - only used for mask creation
-                controlnet_model=None,
-                controlnet_module=None,
-                controlnet_weight=0.0,
+                inpainting_fill=1,         # Inpainting fill mode (1 = original)
+                inpaint_full_res=True,     # Full resolution inpainting
+                inpaint_full_res_padding=32,  # Padding for full resolution
+                mask_blur=8,               # Mask blur 6-10 (8 is middle)
+                # ControlNet segmentation enabled during generation
+                # Uses control_v11p_sd15_seg model with segmentation module
+                controlnet_enabled=True,    # Enabled for segmentation during generation
+                controlnet_model="control_v11p_sd15_seg",  # Segmentation model
+                controlnet_module="segmentation",  # Segmentation module
+                controlnet_weight=1.2,      # Weight ~1.2
                 controlnet_guidance_start=0.0,
-                controlnet_guidance_end=0.0,
-                controlnet_control_mode="Balanced"
+                controlnet_guidance_end=0.75,  # guidance_end <= 0.8
+                controlnet_control_mode="Balanced",
+                controlnet_pixel_perfect=True  # Pixel perfect mode
             )
             
             # Save generated image temporarily
