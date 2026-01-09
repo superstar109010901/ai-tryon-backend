@@ -188,6 +188,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",  # Accept connections from any IP (required for remote access)
-        port=8000,        # Backend internal port (maps to external port 8384 on Vast.ai)
+        port=8384,        # Backend internal port (maps to external port 36580 on Vast.ai)
         reload=False      # Disable reload for production
     )
