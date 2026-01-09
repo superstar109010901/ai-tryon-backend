@@ -23,11 +23,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
-# Simple prompt focused on white shirt only (mask restricts to clothing area)
-STATIC_PROMPT = "a plain white shirt, white cotton shirt, clean white clothing"
+# Literal color-forcing prompt to ensure pure white shirt
+STATIC_PROMPT = "plain pure white cotton shirt, solid white color, no patterns, pure white fabric, bright white shirt"
 
-# Negative prompt to avoid unwanted changes (especially face changes)
-NEGATIVE_PROMPT = "different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification"
+# Negative prompt to avoid unwanted changes and enforce white color
+NEGATIVE_PROMPT = "gray, grey, gray shirt, grey shirt, shadows, dark colors, skin color, face, neck, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification, patterns, stripes, designs"
 
 
 
@@ -100,9 +100,9 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.65,  # Strong enough to change clothing effectively
-                steps=25,                  # Stable quality, low VRAM
-                cfg_scale=7,               # Good prompt following for white shirt
+                denoising_strength=0.40,  # Moderate: enough for clothes, preserves face (0.35-0.45 range)
+                steps=25,                  # Moderate steps (20-28 range)
+                cfg_scale=5.5,             # Moderate CFG to avoid face rewriting (5-6 range)
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width
                 height=768,                # Fixed height
@@ -212,9 +212,10 @@ class ImageProcessor:
         # Set clothing areas to white (255)
         mask_array[final_clothing_mask] = 255
         
-        # Clean up: remove any white pixels near face area (top 40%)
-        face_protection_zone = int(height * 0.40)
-        mask_array[:face_protection_zone, :] = 0  # Force black in face area
+        # Clean up: remove any white pixels near face/neck area
+        # Top edge must stay below the neck - protect top 45% to ensure neck is safe
+        face_protection_zone = int(height * 0.45)
+        mask_array[:face_protection_zone, :] = 0  # Force pure black in face/neck area
         
         # Clean edges: remove small white pixels that might be face/neck
         # Use morphological operations to clean up
@@ -233,21 +234,21 @@ class ImageProcessor:
             mask_pil = mask_pil.filter(ImageFilter.MaxFilter(5))   # Fill small holes
             mask_array = np.array(mask_pil)
         
-        # Ensure face area is completely black
+        # Ensure face/neck area is completely black (double protection)
         mask_array[:face_protection_zone, :] = 0
         
-        # Convert back to PIL Image
+        # Convert to pure black/white (no gray pixels) - strict mask
+        # Threshold: anything > 127 becomes 255 (white), <= 127 becomes 0 (black)
+        mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
+        
+        # Ensure face area is pure black (triple protection)
+        mask_array[:face_protection_zone, :] = 0
+        
+        # Convert back to PIL Image (NO BLUR - strict mask edges)
         mask = Image.fromarray(mask_array, mode='L')
         
-        # Apply slight blur for smooth edges (but keep face area sharp)
-        mask_array_blurred = np.array(mask)
-        # Only blur the clothing area, not the face protection zone
-        clothing_region = mask_array_blurred[face_protection_zone:, :]
-        if clothing_region.size > 0:
-            mask_clothing = Image.fromarray(clothing_region, mode='L')
-            mask_clothing = mask_clothing.filter(ImageFilter.GaussianBlur(radius=3))
-            mask_array_blurred[face_protection_zone:, :] = np.array(mask_clothing)
-            mask = Image.fromarray(mask_array_blurred, mode='L')
+        # NO BLUR - keep mask strict (pure black/white only)
+        # This ensures SD only changes the exact clothing area, no gray pixels
         
         logger.info(f"Created mask from segmentation: {np.sum(mask_array > 127)} white pixels")
         logger.info(f"Face area (top {face_protection_zone}px) is protected (black)")

@@ -157,9 +157,9 @@ class VastAIClient:
         prompt: str,
         negative_prompt: str = "",
         mask: Optional[Image.Image] = None,
-        denoising_strength: float = 0.48,
+        denoising_strength: float = 0.40,
         steps: int = 25,
-        cfg_scale: float = 5.0,
+        cfg_scale: float = 5.5,
         sampler_name: str = "DPM++ 2M Karras",
         width: int = 512,
         height: int = 768,
@@ -229,7 +229,8 @@ class VastAIClient:
                 payload["inpaint_full_res"] = inpaint_full_res
                 payload["inpaint_full_res_padding"] = inpaint_full_res_padding
                 payload["inpaint_area"] = 1  # Inpaint masked area only (1 = masked area, 0 = whole picture)
-                logger.info("Using inpainting with mask (white=change, black=preserve), inpaint_area=1 (masked only)")
+                payload["mask_blur"] = 0  # No mask blur - strict mask edges (0 = no blur)
+                logger.info("Using inpainting with strict mask (white=change, black=preserve), inpaint_area=1, mask_blur=0")
             else:
                 raise Exception("Mask is required for clothing replacement")
             
