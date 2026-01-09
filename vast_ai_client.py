@@ -69,30 +69,38 @@ class VastAIClient:
         image: Image.Image,
         prompt: str,
         negative_prompt: str = "",
-        denoising_strength: float = 0.35,
-        steps: int = 20,
-        cfg_scale: float = 5.5,
+        mask: Optional[Image.Image] = None,
+        denoising_strength: float = 0.32,
+        steps: int = 25,
+        cfg_scale: float = 7.0,
         sampler_name: str = "DPM++ 2M Karras",
         width: int = 512,
         height: int = 768,
+        inpainting_fill: int = 1,
+        inpaint_full_res: bool = True,
+        inpaint_full_res_padding: int = 32,
         controlnet_enabled: bool = False,
         controlnet_module: Optional[str] = None,
         controlnet_model: Optional[str] = None,
         controlnet_weight: float = 1.0
     ) -> Image.Image:
         """
-        Generate image using Vast.ai img2img API.
+        Generate image using Vast.ai img2img API with optional inpainting mask.
         
         Args:
             image: Input PIL Image
             prompt: Positive prompt for generation
             negative_prompt: Negative prompt (what to avoid)
+            mask: Optional mask image for inpainting (white=change, black=preserve)
             denoising_strength: How much to change the image (0.0-1.0)
             steps: Number of inference steps
             cfg_scale: Guidance scale (how closely to follow prompt)
             sampler_name: Sampler to use (e.g., "DPM++ 2M Karras")
             width: Output image width
             height: Output image height
+            inpainting_fill: Inpainting fill mode (0=fill, 1=original, 2=latent noise, 3=latent nothing)
+            inpaint_full_res: Use full resolution inpainting
+            inpaint_full_res_padding: Padding for full resolution inpainting
             controlnet_enabled: Whether to use ControlNet
             controlnet_module: ControlNet module name (e.g., "openpose")
             controlnet_model: ControlNet model name (e.g., "control_v11p_sd15_openpose")
@@ -117,6 +125,15 @@ class VastAIClient:
                 "width": width,
                 "height": height
             }
+            
+            # Add mask for inpainting if provided
+            if mask is not None:
+                mask_base64 = self._image_to_base64(mask)
+                payload["mask"] = mask_base64
+                payload["inpainting_fill"] = inpainting_fill
+                payload["inpaint_full_res"] = inpaint_full_res
+                payload["inpaint_full_res_padding"] = inpaint_full_res_padding
+                logger.info("Using inpainting with mask (white=change, black=preserve)")
             
             # Add ControlNet if enabled
             if controlnet_enabled and controlnet_module and controlnet_model:

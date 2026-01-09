@@ -20,10 +20,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
-STATIC_PROMPT = "person wearing the white clothes, preserve face, preserve body shape"
+STATIC_PROMPT = "person wearing clean white shirt, realistic fabric, natural lighting"
 
-# Negative prompt to avoid unwanted changes
-NEGATIVE_PROMPT = "deformed, distorted face, extra limbs, unrealistic"
+# Negative prompt to avoid unwanted changes (especially face changes)
+NEGATIVE_PROMPT = "face change, different face, deformed face, altered identity, different person, bad anatomy"
 
 
 
@@ -75,24 +75,27 @@ class ImageProcessor:
                 image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 logger.info(f"Resized image to {image.size}")
             
-            # Generate image using Vast.ai img2img API
-            # Using exact parameters as specified:
-            # - prompt: "person wearing the same clothes, preserve face, preserve body shape"
-            # - negative_prompt: "deformed, distorted face, extra limbs, unrealistic"
-            # - denoising_strength: 0.35
-            # - steps: 20
-            # - cfg_scale: 5.5
-            # - width: 512, height: 768
+            # Generate mask for inpainting
+            # White (255) = area SD CAN change (clothing)
+            # Black (0) = area SD MUST NOT change (face, hair, body)
+            mask = self.generate_clothing_mask(image)
+            
+            # Generate image using Vast.ai img2img API with inpainting
+            # Using inpainting with mask to preserve face and only change clothing
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
+                mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.35,  # Fixed parameter
-                steps=20,                  # Fixed parameter
-                cfg_scale=5.5,             # Fixed parameter
+                denoising_strength=0.32,  # Fixed parameter
+                steps=25,                  # Fixed parameter
+                cfg_scale=7,               # Fixed parameter
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width
                 height=768,                # Fixed height
+                inpainting_fill=1,         # Inpainting fill mode
+                inpaint_full_res=True,     # Full resolution inpainting
+                inpaint_full_res_padding=32,  # Padding for full res
                 controlnet_enabled=CONTROLNET_ENABLED,
                 controlnet_module=CONTROLNET_MODULE if CONTROLNET_ENABLED else None,
                 controlnet_model=CONTROLNET_MODEL if CONTROLNET_ENABLED else None,
@@ -121,6 +124,60 @@ class ImageProcessor:
                 "success": False,
                 "error": str(e)
             }
+    
+    def generate_clothing_mask(self, image: Image.Image) -> Image.Image:
+        """
+        Generate a mask for inpainting where only clothing area can be changed.
+        
+        Mask rules (VERY IMPORTANT):
+        - White (255) = area SD CAN change (clothing)
+        - Black (0) = area SD MUST NOT change (face, hair, body)
+        
+        If the face is white even a little → SD will change it.
+        
+        Args:
+            image: Input PIL Image
+        
+        Returns:
+            PIL Image mask (white = inpaint/clothing area, black = preserve)
+        """
+        from PIL import ImageDraw, ImageFilter
+        
+        width, height = image.size
+        
+        # Create mask: start with all black (preserve everything)
+        mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
+        
+        # Define clothing area (torso/body region)
+        # IMPORTANT: Keep face area completely black (0) to preserve it
+        # Face is typically in upper 30% of image
+        # Clothing is typically in middle 30-70% of image height
+        
+        # Face protection zone (top 30% - keep black)
+        face_bottom = int(height * 0.30)
+        
+        # Clothing area (middle section - make white for inpainting)
+        clothing_top = int(height * 0.25)  # Start below face
+        clothing_bottom = int(height * 0.75)  # End before legs
+        clothing_left = int(width * 0.15)  # Margin on left
+        clothing_right = int(width * 0.85)  # Margin on right
+        
+        # Draw white rectangle for clothing area only
+        # This is the area SD can change
+        draw = ImageDraw.Draw(mask)
+        draw.rectangle(
+            [(clothing_left, clothing_top), (clothing_right, clothing_bottom)],
+            fill=255  # White = SD can change this area
+        )
+        
+        # Apply Gaussian blur for soft edges (better blending)
+        # This helps with smoother transitions
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=15))
+        
+        logger.info(f"Generated mask: clothing area ({clothing_left},{clothing_top}) to ({clothing_right},{clothing_bottom})")
+        logger.info(f"Face area (top {face_bottom}px) is protected (black)")
+        
+        return mask
     
     def cleanup_old_files(self, keep_count: int = 10):
         """
