@@ -19,21 +19,11 @@ from config import CONTROLNET_ENABLED, CONTROLNET_MODULE, CONTROLNET_MODEL, CONT
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Static prompt for clothing replacement - fixed to white shirt
-# IMPORTANT: Must preserve face and only change clothing
-STATIC_PROMPT = """
-white shirt,
-realistic clothing replacement,
-keep the person's face completely unchanged,
-preserve facial features exactly as they are,
-do not modify face, head, or hair,
-only change the clothing on the body,
-preserve body shape,
-natural fabric folds,
-photorealistic,
-studio lighting,
-high detail
-"""
+# Static prompt for clothing replacement
+STATIC_PROMPT = "person wearing the white clothes, preserve face, preserve body shape"
+
+# Negative prompt to avoid unwanted changes
+NEGATIVE_PROMPT = "deformed, distorted face, extra limbs, unrealistic"
 
 
 
@@ -77,22 +67,32 @@ class ImageProcessor:
             # Load image from bytes
             image = Image.open(io.BytesIO(image_data)).convert("RGB")
             
-            # Resize image if too large (SD works best with reasonable sizes)
-            # Maintain aspect ratio
-            max_size = 1024
-            if max(image.size) > max_size:
-                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            # Resize image to match target dimensions (512x768)
+            # This ensures consistent output size as specified
+            target_width = 512
+            target_height = 768
+            if image.size != (target_width, target_height):
+                image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 logger.info(f"Resized image to {image.size}")
             
             # Generate image using Vast.ai img2img API
-            # Using static prompt and fixed SD parameters
+            # Using exact parameters as specified:
+            # - prompt: "person wearing the same clothes, preserve face, preserve body shape"
+            # - negative_prompt: "deformed, distorted face, extra limbs, unrealistic"
+            # - denoising_strength: 0.35
+            # - steps: 20
+            # - cfg_scale: 5.5
+            # - width: 512, height: 768
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
-                prompt=STATIC_PROMPT.strip(),
-                denoising_strength=0.45,  # Fixed parameter
-                steps=30,                  # Fixed parameter
-                cfg_scale=7,               # Fixed parameter
+                prompt=STATIC_PROMPT,
+                negative_prompt=NEGATIVE_PROMPT,
+                denoising_strength=0.35,  # Fixed parameter
+                steps=20,                  # Fixed parameter
+                cfg_scale=5.5,             # Fixed parameter
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
+                width=512,                 # Fixed width
+                height=768,                # Fixed height
                 controlnet_enabled=CONTROLNET_ENABLED,
                 controlnet_module=CONTROLNET_MODULE if CONTROLNET_ENABLED else None,
                 controlnet_model=CONTROLNET_MODEL if CONTROLNET_ENABLED else None,

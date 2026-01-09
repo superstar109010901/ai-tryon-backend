@@ -68,10 +68,13 @@ class VastAIClient:
         self,
         image: Image.Image,
         prompt: str,
-        denoising_strength: float = 0.45,
-        steps: int = 30,
-        cfg_scale: float = 7.0,
+        negative_prompt: str = "",
+        denoising_strength: float = 0.35,
+        steps: int = 20,
+        cfg_scale: float = 5.5,
         sampler_name: str = "DPM++ 2M Karras",
+        width: int = 512,
+        height: int = 768,
         controlnet_enabled: bool = False,
         controlnet_module: Optional[str] = None,
         controlnet_model: Optional[str] = None,
@@ -83,10 +86,13 @@ class VastAIClient:
         Args:
             image: Input PIL Image
             prompt: Positive prompt for generation
+            negative_prompt: Negative prompt (what to avoid)
             denoising_strength: How much to change the image (0.0-1.0)
             steps: Number of inference steps
             cfg_scale: Guidance scale (how closely to follow prompt)
             sampler_name: Sampler to use (e.g., "DPM++ 2M Karras")
+            width: Output image width
+            height: Output image height
             controlnet_enabled: Whether to use ControlNet
             controlnet_module: ControlNet module name (e.g., "openpose")
             controlnet_model: ControlNet model name (e.g., "control_v11p_sd15_openpose")
@@ -103,12 +109,13 @@ class VastAIClient:
             payload = {
                 "init_images": [image_base64],
                 "prompt": prompt,
+                "negative_prompt": negative_prompt,
                 "denoising_strength": denoising_strength,
                 "steps": steps,
                 "cfg_scale": cfg_scale,
                 "sampler_name": sampler_name,
-                "width": image.width,
-                "height": image.height
+                "width": width,
+                "height": height
             }
             
             # Add ControlNet if enabled
