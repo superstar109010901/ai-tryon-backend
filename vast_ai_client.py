@@ -64,6 +64,41 @@ class VastAIClient:
         img_data = base64.b64decode(img_base64)
         return Image.open(io.BytesIO(img_data))
     
+    async def test_connection(self) -> bool:
+        """
+        Test connection to Vast.ai API by checking if endpoint is accessible.
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                # Try to access the options endpoint (lightweight check)
+                async with session.get(self.health_endpoint) as response:
+                    if response.status == 200:
+                        logger.info(f"✅ Successfully connected to Vast.ai API at {self.api_url}")
+                        return True
+                    else:
+                        logger.warning(f"⚠️  API returned status {response.status} at {self.health_endpoint}")
+                        # Try alternative endpoint
+                        alt_endpoint = f"{self.api_url}/sdapi/v1/version"
+                        async with session.get(alt_endpoint) as alt_response:
+                            if alt_response.status == 200:
+                                logger.info(f"✅ Successfully connected via alternative endpoint")
+                                return True
+                        return False
+        except aiohttp.ClientConnectorError as e:
+            logger.error(f"❌ Cannot connect to {self.api_url}: {e}")
+            logger.error(f"   Please check:")
+            logger.error(f"   1. Is SD WebUI running?")
+            logger.error(f"   2. Is the URL correct? (current: {self.api_url})")
+            logger.error(f"   3. If on same server, use: http://localhost:7860")
+            logger.error(f"   4. If remote, use external port: http://74.48.140.178:8081")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error testing connection: {e}")
+            return False
+    
     async def generate_img2img(
         self,
         image: Image.Image,
@@ -176,7 +211,12 @@ class VastAIClient:
                 ) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        raise Exception(f"Vast.ai API error {response.status}: {error_text}")
+                        error_msg = f"Vast.ai API error {response.status}: {error_text}"
+                        logger.error(f"API Request failed:")
+                        logger.error(f"  URL: {self.img2img_endpoint}")
+                        logger.error(f"  Status: {response.status}")
+                        logger.error(f"  Error: {error_text}")
+                        raise Exception(error_msg)
                     
                     result = await response.json()
                     

@@ -5,10 +5,20 @@ Configuration file for Vast.ai API connection
 import os
 
 # Vast.ai Stable Diffusion API URL
-# For Vast.ai: Use the external port that maps to SD API
-# Your Vast.ai server: SD WebUI runs on external port 8081
-#   VAST_AI_SD_URL = "http://74.48.140.178:8081"  # SD API external port on Vast.ai
-VAST_AI_SD_URL = os.getenv("VAST_AI_SD_URL", "http://localhost:8081")
+# IMPORTANT: Choose the correct URL based on where your backend runs:
+#
+# Option 1: Backend and SD WebUI on SAME Vast.ai server (RECOMMENDED)
+#   Use internal port: http://localhost:7860
+#   (SD WebUI runs on internal port 7860, maps to external 8081)
+#
+# Option 2: Backend on different server (or local machine)
+#   Use external port: http://74.48.140.178:8081
+#   (Access SD WebUI from outside via external port 8081)
+#
+# Set via environment variable:
+#   export VAST_AI_SD_URL="http://localhost:7860"  # Same server (default)
+#   export VAST_AI_SD_URL="http://74.48.140.178:8081"  # Remote access
+VAST_AI_SD_URL = os.getenv("VAST_AI_SD_URL", "http://localhost:7860")
 
 # ControlNet Configuration
 # ControlNet with OpenPose is used to preserve pose and body structure
