@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
 # Focused on preserving person identity while changing only clothing
-STATIC_PROMPT = "a realistic photo of the same person wearing a clean white cotton shirt, natural fabric folds, realistic lighting, same face, same body, same pose, clothing replacement only"
+STATIC_PROMPT = "same person, same face, same identity, same body, same pose, wearing clean white cotton shirt, natural fabric folds, realistic lighting, clothing replacement only, preserve original person completely"
 
 # Negative prompt to avoid unwanted changes (especially face changes)
-NEGATIVE_PROMPT = "different face, face change, distorted face, new person, body deformation, extra limbs, bad anatomy, blur, low quality"
+NEGATIVE_PROMPT = "different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification"
 
 
 
@@ -91,9 +91,9 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.70,  # Strong denoising for effective clothing change
+                denoising_strength=0.55,  # Balanced: strong enough for clothes, preserves identity
                 steps=25,                  # Stable quality, low VRAM
-                cfg_scale=7,               # Stronger prompt following for better clothing change
+                cfg_scale=6,               # Balanced prompt following
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width
                 height=768,                # Fixed height
@@ -156,19 +156,20 @@ class ImageProcessor:
         mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
         
         # Define clothing area (torso/body region)
-        # IMPORTANT: Keep face area completely black (0) to preserve it
-        # Mask covers body/clothing area (white) - everything else is black (preserved)
-        # Expanded mask area to cover more of the body for better clothing change
+        # IMPORTANT: Keep face and head area completely black (0) to preserve person identity
+        # Mask covers ONLY body/clothing area (white) - face, head, hair, background are black (preserved)
+        # ControlNet will preserve body structure and person identity
         
-        # Face protection zone (top 25% - keep black to preserve face)
-        face_bottom = int(height * 0.25)
+        # Face and head protection zone (top 35% - keep black to preserve person identity)
+        # Increased protection to ensure face/head/hair are never touched
+        face_bottom = int(height * 0.35)
         
-        # Clothing/body area (expanded - make white for inpainting)
-        # Cover more of the body area to ensure clothes can be changed
-        clothing_top = int(height * 0.20)  # Start earlier (20% instead of 25%)
-        clothing_bottom = int(height * 0.85)  # Extend further down (85% instead of 75%)
-        clothing_left = int(width * 0.10)  # Wider coverage (10% instead of 15%)
-        clothing_right = int(width * 0.90)  # Wider coverage (90% instead of 85%)
+        # Clothing/body area ONLY (make white for inpainting)
+        # Only the torso/body clothing area - face and head are protected
+        clothing_top = int(height * 0.30)  # Start below face/head area
+        clothing_bottom = int(height * 0.80)  # End before lower body/legs
+        clothing_left = int(width * 0.12)  # Slight margins
+        clothing_right = int(width * 0.88)  # Slight margins
         
         # Draw white rectangle for clothing area only
         # This is the area SD can change
