@@ -20,9 +20,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement - fixed to white shirt
+# IMPORTANT: Must preserve face and only change clothing
 STATIC_PROMPT = """
 white shirt,
 realistic clothing replacement,
+keep the person's face completely unchanged,
+preserve facial features exactly as they are,
+do not modify face, head, or hair,
+only change the clothing on the body,
 preserve body shape,
 natural fabric folds,
 photorealistic,
