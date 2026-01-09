@@ -19,8 +19,9 @@ from config import CONTROLNET_ENABLED, CONTROLNET_MODULE, CONTROLNET_MODEL, CONT
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Static prompts for clothing replacement
+# Static prompt for clothing replacement - fixed to white shirt
 STATIC_PROMPT = """
+white shirt,
 realistic clothing replacement,
 preserve body shape,
 natural fabric folds,
