@@ -91,9 +91,9 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.48,  # Enough to change clothes, not face
+                denoising_strength=0.70,  # Strong denoising for effective clothing change
                 steps=25,                  # Stable quality, low VRAM
-                cfg_scale=5,               # Prevents over-forcing prompt
+                cfg_scale=7,               # Stronger prompt following for better clothing change
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width
                 height=768,                # Fixed height
@@ -157,17 +157,18 @@ class ImageProcessor:
         
         # Define clothing area (torso/body region)
         # IMPORTANT: Keep face area completely black (0) to preserve it
-        # Face is typically in upper 30% of image
-        # Clothing is typically in middle 30-70% of image height
+        # Mask covers body/clothing area (white) - everything else is black (preserved)
+        # Expanded mask area to cover more of the body for better clothing change
         
-        # Face protection zone (top 30% - keep black)
-        face_bottom = int(height * 0.30)
+        # Face protection zone (top 25% - keep black to preserve face)
+        face_bottom = int(height * 0.25)
         
-        # Clothing area (middle section - make white for inpainting)
-        clothing_top = int(height * 0.25)  # Start below face
-        clothing_bottom = int(height * 0.75)  # End before legs
-        clothing_left = int(width * 0.15)  # Margin on left
-        clothing_right = int(width * 0.85)  # Margin on right
+        # Clothing/body area (expanded - make white for inpainting)
+        # Cover more of the body area to ensure clothes can be changed
+        clothing_top = int(height * 0.20)  # Start earlier (20% instead of 25%)
+        clothing_bottom = int(height * 0.85)  # Extend further down (85% instead of 75%)
+        clothing_left = int(width * 0.10)  # Wider coverage (10% instead of 15%)
+        clothing_right = int(width * 0.90)  # Wider coverage (90% instead of 85%)
         
         # Draw white rectangle for clothing area only
         # This is the area SD can change
