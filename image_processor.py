@@ -49,7 +49,7 @@ class ImageProcessor:
         
         Args:
             vast_ai_url: Base URL of Vast.ai Stable Diffusion API
-                         (e.g., "http://localhost:7860" or "http://74.48.140.178:36769")
+                         (e.g., "http://localhost:8081" or "http://74.48.140.178:36769")
         """
         self.vast_ai_client = VastAIClient(vast_ai_url)
         self.temp_dir = Path("temp_images")

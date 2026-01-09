@@ -28,7 +28,7 @@ class VastAIClient:
         Initialize Vast.ai API client.
         
         Args:
-            api_url: Base URL of Vast.ai SD API (e.g., "http://localhost:7860")
+            api_url: Base URL of Vast.ai SD API (e.g., "http://localhost:8081")
             timeout: Request timeout in seconds (default: 300 for image generation)
         """
         self.api_url = api_url.rstrip('/')
