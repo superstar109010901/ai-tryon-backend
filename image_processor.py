@@ -23,11 +23,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
-# Literal color-forcing prompt to ensure pure white shirt
-STATIC_PROMPT = "plain pure white cotton shirt, solid white color, no patterns, pure white fabric, bright white shirt"
+# Hard-force pure white color with literal color command
+STATIC_PROMPT = "plain solid pure white shirt, uniform white color, no shading, no gray, no patterns, no logos, pure white fabric"
 
 # Negative prompt to avoid unwanted changes and enforce white color
-NEGATIVE_PROMPT = "gray, grey, gray shirt, grey shirt, shadows, dark colors, skin color, face, neck, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification, patterns, stripes, designs"
+NEGATIVE_PROMPT = "gray, off-white, shadows, wrinkles, texture transfer, skin, face, neck, hair, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification, patterns, stripes, designs, logos"
 
 
 
@@ -100,9 +100,9 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.40,  # Moderate: enough for clothes, preserves face (0.35-0.45 range)
-                steps=25,                  # Moderate steps (20-28 range)
-                cfg_scale=5.5,             # Moderate CFG to avoid face rewriting (5-6 range)
+                denoising_strength=0.40,  # Moderate: enough for clothes, preserves face (0.35-0.45 range, max 0.45)
+                steps=24,                  # Moderate steps (20-28 range)
+                cfg_scale=5.0,             # Reduced model authority (4.5-6 range) to prevent face rewriting
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width
                 height=768,                # Fixed height
@@ -212,10 +212,12 @@ class ImageProcessor:
         # Set clothing areas to white (255)
         mask_array[final_clothing_mask] = 255
         
-        # Clean up: remove any white pixels near face/neck area
-        # Top edge must stay below the neck - protect top 45% to ensure neck is safe
-        face_protection_zone = int(height * 0.45)
-        mask_array[:face_protection_zone, :] = 0  # Force pure black in face/neck area
+        # Clean up: remove any white pixels near face/neck/shoulder area
+        # Lock face completely - mask must not touch neck, chin, jawline, or shoulders
+        # Leave clear gap between bottom of face and top of shirt
+        # Protect top 50% to ensure face, neck, chin, jawline, and shoulders are safe
+        face_protection_zone = int(height * 0.50)
+        mask_array[:face_protection_zone, :] = 0  # Force pure black in face/neck/shoulder area
         
         # Clean edges: remove small white pixels that might be face/neck
         # Use morphological operations to clean up
@@ -234,20 +236,23 @@ class ImageProcessor:
             mask_pil = mask_pil.filter(ImageFilter.MaxFilter(5))   # Fill small holes
             mask_array = np.array(mask_pil)
         
-        # Ensure face/neck area is completely black (double protection)
+        # Ensure face/neck/shoulder area is completely black (double protection)
         mask_array[:face_protection_zone, :] = 0
         
-        # Convert to pure black/white (no gray pixels) - strict mask
+        # Convert to pure black/white (no gray pixels) - STRICT mask
         # Threshold: anything > 127 becomes 255 (white), <= 127 becomes 0 (black)
+        # This ensures pure white (255) for shirt, pure black (0) for everything else
         mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
         
-        # Ensure face area is pure black (triple protection)
+        # Ensure face/neck/shoulder area is pure black (triple protection)
+        # Even a few gray pixels lets the model "rewrite" the face
         mask_array[:face_protection_zone, :] = 0
         
-        # Convert back to PIL Image (NO BLUR - strict mask edges)
+        # Convert back to PIL Image (NO BLUR, NO SOFT EDGES - strict mask)
         mask = Image.fromarray(mask_array, mode='L')
         
-        # NO BLUR - keep mask strict (pure black/white only)
+        # NO BLUR, NO SOFT EDGES - keep mask strict (pure black/white only)
+        # Shirt area must be pure white (255), everything else pure black (0)
         # This ensures SD only changes the exact clothing area, no gray pixels
         
         logger.info(f"Created mask from segmentation: {np.sum(mask_array > 127)} white pixels")
