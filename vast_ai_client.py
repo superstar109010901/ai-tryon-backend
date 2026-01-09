@@ -33,8 +33,10 @@ class VastAIClient:
         """
         self.api_url = api_url.rstrip('/')
         self.img2img_endpoint = f"{self.api_url}/sdapi/v1/img2img"
+        self.controlnet_detect_endpoint = f"{self.api_url}/controlnet/detect"  # For segmentation preprocessing
         self.timeout = timeout
         logger.info(f"Initialized Vast.ai client with API URL: {self.api_url}")
+        logger.info(f"ControlNet detect endpoint: {self.controlnet_detect_endpoint}")
     
     def _image_to_base64(self, image: Image.Image) -> str:
         """
@@ -63,6 +65,56 @@ class VastAIClient:
         """
         img_data = base64.b64decode(img_base64)
         return Image.open(io.BytesIO(img_data))
+    
+    async def get_segmentation_map(self, image: Image.Image) -> Image.Image:
+        """
+        Get segmentation map from ControlNet segmentation preprocessor.
+        This detects and labels body parts in the image.
+        
+        Args:
+            image: Input PIL Image
+        
+        Returns:
+            Segmentation map as PIL Image (colored map with body part labels)
+        """
+        try:
+            image_base64 = self._image_to_base64(image)
+            
+            payload = {
+                "controlnet_module": "segmentation",
+                "controlnet_input_images": [image_base64],
+                "controlnet_processor_res": 512,
+                "controlnet_threshold_a": 64,
+                "controlnet_threshold_b": 64
+            }
+            
+            logger.info("Requesting segmentation map from ControlNet...")
+            
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                async with session.post(
+                    self.controlnet_detect_endpoint,
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"ControlNet segmentation error {response.status}: {error_text}")
+                    
+                    result = await response.json()
+                    
+                    # Extract segmentation image from response
+                    if "images" not in result or len(result["images"]) == 0:
+                        raise Exception("No segmentation image returned from ControlNet")
+                    
+                    segmentation_base64 = result["images"][0]
+                    segmentation_image = self._base64_to_image(segmentation_base64)
+                    
+                    logger.info("Segmentation map received successfully")
+                    return segmentation_image
+                    
+        except Exception as e:
+            logger.error(f"Error getting segmentation map: {e}")
+            raise
     
     async def test_connection(self) -> bool:
         """
@@ -176,7 +228,8 @@ class VastAIClient:
                 payload["inpainting_fill"] = inpainting_fill
                 payload["inpaint_full_res"] = inpaint_full_res
                 payload["inpaint_full_res_padding"] = inpaint_full_res_padding
-                logger.info("Using inpainting with mask (white=change, black=preserve)")
+                payload["inpaint_area"] = 1  # Inpaint masked area only (1 = masked area, 0 = whole picture)
+                logger.info("Using inpainting with mask (white=change, black=preserve), inpaint_area=1 (masked only)")
             else:
                 raise Exception("Mask is required for clothing replacement")
             

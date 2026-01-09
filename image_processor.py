@@ -5,9 +5,9 @@ Handles image processing and calls Vast.ai Stable Diffusion API for clothing gen
 
 import io
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple, Optional
 import logging
 import uuid
 from datetime import datetime
@@ -23,8 +23,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
-# Focused on preserving person identity while changing only clothing
-STATIC_PROMPT = "same person, same face, same identity, same body, same pose, wearing clean white cotton shirt, natural fabric folds, realistic lighting, clothing replacement only, preserve original person completely"
+# Simple prompt focused on white shirt only (mask restricts to clothing area)
+STATIC_PROMPT = "a plain white shirt, white cotton shirt, clean white clothing"
 
 # Negative prompt to avoid unwanted changes (especially face changes)
 NEGATIVE_PROMPT = "different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification"
@@ -79,10 +79,19 @@ class ImageProcessor:
                 image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 logger.info(f"Resized image to {image.size}")
             
-            # Generate mask for inpainting
-            # White (255) = area SD CAN change (clothing)
-            # Black (0) = area SD MUST NOT change (face, hair, body)
-            mask = self.generate_clothing_mask(image)
+            # Generate mask using ControlNet segmentation
+            # Step 1: Get segmentation map from ControlNet (detects body parts)
+            logger.info("Getting segmentation map from ControlNet...")
+            try:
+                segmentation_map = await self.vast_ai_client.get_segmentation_map(image)
+                
+                # Step 2: Create mask from segmentation (clothing = white, everything else = black)
+                logger.info("Creating mask from segmentation map...")
+                mask = self.create_mask_from_segmentation(segmentation_map, image)
+            except Exception as e:
+                logger.warning(f"Segmentation failed: {e}. Falling back to rectangle mask.")
+                # Fallback to rectangle mask if segmentation fails
+                mask = self.generate_clothing_mask(image)
             
             # Generate image using Vast.ai img2img API with inpainting + ControlNet
             # Using inpainting with mask + ControlNet OpenPose to preserve face, pose, and only change clothing
@@ -91,9 +100,9 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.55,  # Balanced: strong enough for clothes, preserves identity
+                denoising_strength=0.65,  # Strong enough to change clothing effectively
                 steps=25,                  # Stable quality, low VRAM
-                cfg_scale=6,               # Balanced prompt following
+                cfg_scale=7,               # Good prompt following for white shirt
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
                 width=512,                 # Fixed width
                 height=768,                # Fixed height
@@ -131,6 +140,119 @@ class ImageProcessor:
                 "success": False,
                 "error": str(e)
             }
+    
+    def create_mask_from_segmentation(self, segmentation_map: Image.Image, original_image: Image.Image) -> Image.Image:
+        """
+        Create inpainting mask from segmentation map.
+        Converts clothing/shirt areas to white, everything else to black.
+        
+        Args:
+            segmentation_map: Segmentation map from ControlNet (colored body part labels)
+            original_image: Original input image (for size matching)
+        
+        Returns:
+            PIL Image mask (white = clothing area, black = everything else)
+        """
+        import numpy as np
+        from PIL import ImageFilter
+        
+        # Resize segmentation to match original image size
+        width, height = original_image.size
+        segmentation = segmentation_map.resize((width, height), Image.Resampling.LANCZOS)
+        
+        # Convert to numpy array for processing
+        seg_array = np.array(segmentation)
+        
+        # Segmentation typically uses specific colors for different body parts
+        # Common segmentation colors (may vary by model):
+        # - Shirt/torso: Usually red/pink tones or specific color ranges
+        # - Face: Usually skin tones
+        # - Hair: Usually dark colors
+        # - Background: Usually blue/green
+        
+        # Create mask: start with all black
+        mask_array = np.zeros((height, width), dtype=np.uint8)
+        
+        # Convert segmentation to HSV for better color detection
+        seg_hsv = Image.fromarray(seg_array).convert('HSV')
+        hsv_array = np.array(seg_hsv)
+        
+        # Detect clothing/shirt areas
+        # Shirt areas in segmentation are typically:
+        # - Red/pink/magenta tones (H: 0-20 or 160-180)
+        # - Medium to high saturation
+        # - Medium to high value
+        
+        h, s, v = hsv_array[:, :, 0], hsv_array[:, :, 1], hsv_array[:, :, 2]
+        
+        # Define clothing color ranges in HSV
+        # Red/pink/magenta for shirt (H: 0-20 or 160-180)
+        clothing_mask_h = ((h >= 0) & (h <= 20)) | ((h >= 160) & (h <= 180))
+        clothing_mask_s = (s >= 50) & (s <= 255)  # Medium to high saturation
+        clothing_mask_v = (v >= 50) & (v <= 255)  # Medium to high value
+        
+        # Combine conditions for clothing detection
+        clothing_mask = clothing_mask_h & clothing_mask_s & clothing_mask_v
+        
+        # Also check RGB directly for common shirt colors
+        rgb_array = np.array(segmentation)
+        r, g, b = rgb_array[:, :, 0], rgb_array[:, :, 1], rgb_array[:, :, 2]
+        
+        # Shirt areas often have: high red, medium blue/green
+        # Or: pink/magenta tones
+        rgb_clothing = (
+            ((r > 150) & (r > g) & (r > b)) |  # Red/pink dominant
+            ((r > 100) & (g < 100) & (b < 100)) |  # Red tones
+            ((r > 120) & (g > 80) & (b > 120))  # Pink/magenta
+        )
+        
+        # Combine HSV and RGB detection
+        final_clothing_mask = clothing_mask | rgb_clothing
+        
+        # Set clothing areas to white (255)
+        mask_array[final_clothing_mask] = 255
+        
+        # Clean up: remove any white pixels near face area (top 40%)
+        face_protection_zone = int(height * 0.40)
+        mask_array[:face_protection_zone, :] = 0  # Force black in face area
+        
+        # Clean edges: remove small white pixels that might be face/neck
+        # Use morphological operations to clean up
+        try:
+            from scipy import ndimage
+            # Remove small isolated white pixels
+            mask_array = ndimage.binary_opening(mask_array > 127, structure=np.ones((3, 3))).astype(np.uint8) * 255
+            # Fill small holes
+            mask_array = ndimage.binary_closing(mask_array > 127, structure=np.ones((5, 5))).astype(np.uint8) * 255
+        except ImportError:
+            # If scipy not available, use PIL filters
+            logger.warning("scipy not available, using PIL filters for mask cleaning")
+            mask_pil = Image.fromarray(mask_array, mode='L')
+            # Apply filters to clean edges
+            mask_pil = mask_pil.filter(ImageFilter.MinFilter(3))  # Remove small white pixels
+            mask_pil = mask_pil.filter(ImageFilter.MaxFilter(5))   # Fill small holes
+            mask_array = np.array(mask_pil)
+        
+        # Ensure face area is completely black
+        mask_array[:face_protection_zone, :] = 0
+        
+        # Convert back to PIL Image
+        mask = Image.fromarray(mask_array, mode='L')
+        
+        # Apply slight blur for smooth edges (but keep face area sharp)
+        mask_array_blurred = np.array(mask)
+        # Only blur the clothing area, not the face protection zone
+        clothing_region = mask_array_blurred[face_protection_zone:, :]
+        if clothing_region.size > 0:
+            mask_clothing = Image.fromarray(clothing_region, mode='L')
+            mask_clothing = mask_clothing.filter(ImageFilter.GaussianBlur(radius=3))
+            mask_array_blurred[face_protection_zone:, :] = np.array(mask_clothing)
+            mask = Image.fromarray(mask_array_blurred, mode='L')
+        
+        logger.info(f"Created mask from segmentation: {np.sum(mask_array > 127)} white pixels")
+        logger.info(f"Face area (top {face_protection_zone}px) is protected (black)")
+        
+        return mask
     
     def generate_clothing_mask(self, image: Image.Image) -> Image.Image:
         """
