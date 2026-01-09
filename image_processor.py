@@ -23,11 +23,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
-# Hard-force pure white color with literal color command
-STATIC_PROMPT = "plain solid pure white shirt, uniform white color, no shading, no gray, no patterns, no logos, pure white fabric"
+# Replacement prompt (not descriptive) - tells SD to replace the shirt
+STATIC_PROMPT = "replace the shirt with a plain, solid, pure white cotton shirt"
 
 # Negative prompt to avoid unwanted changes and enforce white color
-NEGATIVE_PROMPT = "gray, off-white, shadows, wrinkles, texture transfer, skin, face, neck, hair, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification, patterns, stripes, designs, logos"
+NEGATIVE_PROMPT = "original shirt, original color, gray, black, texture, pattern, logo, shadows, face, skin, neck, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification"
 
 
 
@@ -71,10 +71,10 @@ class ImageProcessor:
             # Load image from bytes
             image = Image.open(io.BytesIO(image_data)).convert("RGB")
             
-            # Resize image to match target dimensions (512x768)
-            # This ensures consistent output size as specified
+            # Resize image to match target dimensions (512x640)
+            # Lower resolution increases pixel preservation resistance and allows better color replacement
             target_width = 512
-            target_height = 768
+            target_height = 640
             if image.size != (target_width, target_height):
                 image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 logger.info(f"Resized image to {image.size}")
@@ -100,22 +100,25 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.40,  # Moderate: enough for clothes, preserves face (0.35-0.45 range, max 0.45)
+                denoising_strength=0.50,  # Increased: enough to change color (0.45-0.55 range)
                 steps=24,                  # Moderate steps (20-28 range)
                 cfg_scale=5.0,             # Reduced model authority (4.5-6 range) to prevent face rewriting
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
-                width=512,                 # Fixed width
-                height=768,                # Fixed height
+                width=512,                 # Fixed width (lower resolution for better color replacement)
+                height=640,                # Reduced height (was 768) - lower resolution resists pixel preservation
                 inpainting_fill=1,         # Inpainting fill mode
                 inpaint_full_res=True,     # Preserves face details
                 inpaint_full_res_padding=32,  # Smooth cloth boundaries
-                controlnet_enabled=CONTROLNET_ENABLED,
-                controlnet_model=CONTROLNET_MODEL if CONTROLNET_ENABLED else "control_sd15_openpose",
-                controlnet_module=CONTROLNET_MODULE if CONTROLNET_ENABLED else "openpose",
-                controlnet_weight=CONTROLNET_WEIGHT if CONTROLNET_ENABLED else 1.0,
-                controlnet_guidance_start=CONTROLNET_GUIDANCE_START if CONTROLNET_ENABLED else 0.0,
-                controlnet_guidance_end=CONTROLNET_GUIDANCE_END if CONTROLNET_ENABLED else 0.9,
-                controlnet_control_mode=CONTROLNET_CONTROL_MODE if CONTROLNET_ENABLED else "Balanced"
+                # DISABLE ControlNet during img2img generation
+                # ControlNet should only be used for mask creation, not during generation
+                # If ControlNet stays enabled, it enforces original garment structure/color, blocking the edit
+                controlnet_enabled=False,  # Disabled - only used for mask creation
+                controlnet_model=None,
+                controlnet_module=None,
+                controlnet_weight=0.0,
+                controlnet_guidance_start=0.0,
+                controlnet_guidance_end=0.0,
+                controlnet_control_mode="Balanced"
             )
             
             # Save generated image temporarily
@@ -244,9 +247,33 @@ class ImageProcessor:
         # This ensures pure white (255) for shirt, pure black (0) for everything else
         mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
         
+        # CRITICAL: Verify mask is correct and active
+        # If segmentation shows clothes as one color and background as another,
+        # we may need to INVERT the mask
+        # Check: if most of the image is white, mask is likely inverted
+        white_pixel_ratio = np.sum(mask_array == 255) / mask_array.size
+        if white_pixel_ratio > 0.7:  # If more than 70% is white, likely inverted
+            logger.warning(f"Mask appears inverted (white_pixel_ratio={white_pixel_ratio:.2f}). Inverting mask...")
+            mask_array = np.where(mask_array == 255, 0, 255).astype(np.uint8)
+            # Re-protect face area after inversion
+            mask_array[:face_protection_zone, :] = 0
+            white_pixel_ratio = np.sum(mask_array == 255) / mask_array.size
+            logger.info(f"After inversion: white_pixel_ratio={white_pixel_ratio:.2f}")
+        
         # Ensure face/neck/shoulder area is pure black (triple protection)
         # Even a few gray pixels lets the model "rewrite" the face
         mask_array[:face_protection_zone, :] = 0
+        
+        # Final verification: ensure mask is active and dominant
+        # Shirt area must be pure white (255), everything else pure black (0)
+        # No transparency, no gray - force pure black/white
+        mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
+        
+        # Log mask statistics for debugging
+        white_pixels = np.sum(mask_array == 255)
+        black_pixels = np.sum(mask_array == 0)
+        total_pixels = mask_array.size
+        logger.info(f"Mask verification: {white_pixels} white pixels ({white_pixels/total_pixels*100:.1f}%), {black_pixels} black pixels ({black_pixels/total_pixels*100:.1f}%)")
         
         # Convert back to PIL Image (NO BLUR, NO SOFT EDGES - strict mask)
         mask = Image.fromarray(mask_array, mode='L')
