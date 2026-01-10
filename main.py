@@ -63,18 +63,25 @@ app = FastAPI(
 )
 
 # Configure CORS to allow frontend to connect
-# Supports localhost development and Vercel deployments
+# Frontend: Create React App (react-scripts) running on port 3000 by default
+# Backend: FastAPI on port 8384 (maps to external 36580 on Vast.ai)
+# Production: Frontend deployed on Vercel
+# Note: allow_credentials=False since no authentication/cookies are used
+origins = [
+    "http://localhost:3000",       # Create React App default dev server
+    "http://127.0.0.1:3000",       # Alternative localhost address
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_origins=origins,                              # Specific localhost origins for development
+    allow_origin_regex=r"https://.*\.vercel\.app",      # Allow all Vercel deployments and preview branches
+    allow_credentials=False,                            # No auth/cookies needed - file upload only
+    allow_methods=["*"],                                # Allow all methods (POST needed for /generate endpoint with file upload)
+    allow_headers=["*"],                                # Allow all headers (needed for multipart/form-data file uploads)
+    expose_headers=["X-Process-Time"],                  # Expose custom headers to frontend if needed
 )
+
 
 
 @app.get("/")
