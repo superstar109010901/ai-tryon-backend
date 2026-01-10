@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Static prompt for clothing replacement
 # Clothes-only prompt - focuses only on the clothing
-STATIC_PROMPT = "Generate a realistic image of the uploaded person wearing plain white shirt, maintaining natural body proportions and posture. Keep the person's face and hairstyle unchanged. Ensure clothing fits the torso and arms realistically. High-resolution, photorealistic lighting, natural shadows, proper folds and fabric texture. Background remains unchanged."
+STATIC_PROMPT = "plain white cotton shirt"
 
 # Negative prompt - strong exclusion of face, hair, skin, body, identity
 NEGATIVE_PROMPT = "face, hair, skin, body, identity, person, head, neck, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification, original shirt, original color, gray, black, texture, pattern, logo, shadows"
@@ -100,7 +100,7 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.4,  # Fixed: allows clothes changes without affecting face (0.5-0.6 range)
+                denoising_strength=0.5,  # Fixed: allows clothes changes without affecting face (0.5-0.6 range)
                 steps=24,                  # Moderate steps (20-28 range)
                 cfg_scale=5.0,             # Reduced model authority (4.5-6 range) to prevent face rewriting
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
