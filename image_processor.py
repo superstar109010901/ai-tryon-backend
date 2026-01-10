@@ -100,7 +100,7 @@ class ImageProcessor:
                 mask=mask,
                 prompt=STATIC_PROMPT,
                 negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.55,  # Fixed: allows clothes changes without affecting face (0.5-0.6 range)
+                denoising_strength=0.4,  # Fixed: allows clothes changes without affecting face (0.5-0.6 range)
                 steps=24,                  # Moderate steps (20-28 range)
                 cfg_scale=5.0,             # Reduced model authority (4.5-6 range) to prevent face rewriting
                 sampler_name="DPM++ 2M Karras",  # Fixed sampler
