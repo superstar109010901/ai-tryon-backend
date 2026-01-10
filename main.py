@@ -65,19 +65,20 @@ app = FastAPI(
 # Configure CORS to allow frontend to connect
 # Frontend: Create React App (react-scripts) running on port 3000 by default
 # Backend: FastAPI on port 8384 (maps to external 36580 on Vast.ai)
-# Production: Frontend deployed on Vercel
+# Production: Frontend deployed on Vercel at https://ai-tryon-3ypg.vercel.app
 # Note: allow_credentials=False since no authentication/cookies are used
 origins = [
-    "http://localhost:3000",       # Create React App default dev server
-    "http://127.0.0.1:3000",       # Alternative localhost address
+    "http://localhost:3000",                    # Create React App default dev server
+    "http://127.0.0.1:3000",                    # Alternative localhost address
+    "https://ai-tryon-3ypg.vercel.app",          # Production Vercel domain
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,                              # Specific localhost origins for development
-    allow_origin_regex=r"https://.*\.vercel\.app",      # Allow all Vercel deployments and preview branches
+    allow_origins=origins,                              # Specific origins for development and production
+    allow_origin_regex=r"https://.*\.vercel\.app",      # Allow all Vercel deployments and preview branches (including ai-tryon-six.vercel.app)
     allow_credentials=False,                            # No auth/cookies needed - file upload only
-    allow_methods=["*"],                                # Allow all methods (POST needed for /generate endpoint with file upload)
+    allow_methods=["GET", "POST", "OPTIONS"],           # Explicitly allow needed methods
     allow_headers=["*"],                                # Allow all headers (needed for multipart/form-data file uploads)
     expose_headers=["X-Process-Time"],                  # Expose custom headers to frontend if needed
 )
