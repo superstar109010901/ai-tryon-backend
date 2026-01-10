@@ -63,16 +63,15 @@ app = FastAPI(
 )
 
 # Configure CORS to allow frontend to connect
-# In production, replace "*" with your frontend URL
+# Supports localhost development and Vercel deployments
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://ai-tryon-six.vercel.app",
-        "https://*.vercel.app"
     ],
-    allow_credentials=False,   # ✅ MUST be False
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
