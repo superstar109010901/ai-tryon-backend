@@ -237,29 +237,35 @@ class VastAIClient:
             else:
                 raise Exception("Mask is required for clothing replacement - binary clothes-only mask must be provided")
             
-            # Add ControlNet segmentation explicitly using alwayson_scripts format
+            # Add ControlNet explicitly using alwayson_scripts format
             # ControlNet must be explicitly enabled in API request, not relying on WebUI defaults
-            if controlnet_enabled and controlnet_module and controlnet_model:
+            if controlnet_enabled:
+                # Use the original image as control image for inpainting
+                control_image_base64 = image_base64
+                
                 # Use alwayson_scripts.controlnet.args format (explicit ControlNet)
+                # Format matches AUTOMATIC1111 API specification
                 payload["alwayson_scripts"] = {
                     "controlnet": {
-                        "args": [{
-                            "input_image": image_base64,  # Use original image for segmentation
-                            "module": controlnet_module,  # "segmentation"
-                            "model": controlnet_model,  # "control_v11p_sd15_seg"
-                            "weight": controlnet_weight,  # ~1.2
-                            "guidance_start": controlnet_guidance_start,  # 0.0
-                            "guidance_end": controlnet_guidance_end,  # <= 0.8
-                            "control_mode": controlnet_control_mode,  # "Balanced"
-                            "pixel_perfect": controlnet_pixel_perfect,  # true
-                            "enabled": True
-                        }]
+                        "args": [
+                            {
+                                "enabled": True,
+                                "model": "controlnet-inpaint-dreamer-sdxl",
+                                "weight": 1.0,
+                                "image": control_image_base64,
+                                "resize_mode": "Crop and Resize",
+                                "control_mode": "Balanced",
+                                "pixel_perfect": True,
+                                "guidance_start": 0.0,
+                                "guidance_end": 0.8
+                            }
+                        ]
                     }
                 }
-                logger.info(f"ControlNet segmentation enabled: {controlnet_module} / {controlnet_model}")
-                logger.info(f"ControlNet weight: {controlnet_weight}, guidance: {controlnet_guidance_start} to {controlnet_guidance_end}, pixel_perfect: {controlnet_pixel_perfect}")
+                logger.info("ControlNet enabled with controlnet-inpaint-dreamer-sdxl model")
+                logger.info(f"ControlNet weight: 1.0, guidance: 0.0 to 0.8, pixel_perfect: True")
             else:
-                logger.warning("ControlNet is disabled - segmentation will not be used during generation")
+                logger.warning("ControlNet is disabled - ControlNet will not be used during generation")
             
             # Send request to Vast.ai API
             logger.info(f"Sending img2img request to {self.img2img_endpoint}")
