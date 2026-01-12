@@ -15,7 +15,8 @@ from datetime import datetime
 from vast_ai_client import VastAIClient
 from config import (
     CONTROLNET_ENABLED, CONTROLNET_MODULE, CONTROLNET_MODEL, CONTROLNET_WEIGHT,
-    CONTROLNET_GUIDANCE_START, CONTROLNET_GUIDANCE_END, CONTROLNET_CONTROL_MODE
+    CONTROLNET_GUIDANCE_START, CONTROLNET_GUIDANCE_END, CONTROLNET_CONTROL_MODE,
+    BACKEND_URL
 )
 
 # Configure logging
@@ -132,9 +133,13 @@ class ImageProcessor:
             
             logger.info(f"Image processed successfully: {filename}")
             
+            # Return full backend URL for the image
+            # Frontend will use this URL directly to download the image
+            image_url = f"{BACKEND_URL}/download/{filename}"
+            
             return {
                 "success": True,
-                "image_url": f"/download/{filename}",
+                "image_url": image_url,
                 "filename": filename
             }
             

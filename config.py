@@ -20,6 +20,12 @@ import os
 #   export VAST_AI_SD_URL="http://74.48.140.178:8081"  # Remote access
 VAST_AI_SD_URL = os.getenv("VAST_AI_SD_URL", "http://localhost:7860")
 
+# Backend URL for serving images
+# This is the external URL where the backend is accessible
+# Used to construct full image URLs for frontend
+# IMPORTANT: This should be the external Vast.ai URL (port 36580 maps to internal 8384)
+BACKEND_URL = os.getenv("BACKEND_URL", "http://74.48.140.178:36580")
+
 # ControlNet Configuration
 # ControlNet with OpenPose is used to preserve pose and body structure
 CONTROLNET_ENABLED = os.getenv("CONTROLNET_ENABLED", "true").lower() == "true"  # Enabled by default
