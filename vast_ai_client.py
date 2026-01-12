@@ -157,7 +157,7 @@ class VastAIClient:
         prompt: str,
         negative_prompt: str = "",
         mask: Optional[Image.Image] = None,
-        denoising_strength: float = 0.55,
+        denoising_strength: float = 0.75,
         steps: int = 24,
         cfg_scale: float = 5.0,
         sampler_name: str = "DPM++ 2M Karras",
