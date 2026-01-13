@@ -382,19 +382,24 @@ class ImageProcessor:
         
         # Threshold: bright areas are likely face
         # Face detection maps usually have high values where face is detected
-        threshold = np.percentile(detection_gray, 70)  # Top 30% brightest = face area
+        # Use lower percentile to catch more face area
+        threshold = np.percentile(detection_gray, 50)  # Top 50% brightest = face area (was 70%, more aggressive)
         face_mask_array = (detection_gray > threshold).astype(np.uint8) * 255
         
-        # Dilate the mask slightly to ensure full face coverage
+        # Dilate the mask more aggressively to ensure full face, neck, and head coverage
         try:
             from scipy import ndimage
-            face_mask_array = ndimage.binary_dilation(face_mask_array > 127, structure=np.ones((5, 5))).astype(np.uint8) * 255
+            # Larger dilation structure for better coverage
+            face_mask_array = ndimage.binary_dilation(face_mask_array > 127, structure=np.ones((10, 10))).astype(np.uint8) * 255  # Increased from 5x5 to 10x10
         except ImportError:
             # If scipy not available, use PIL filters
             from PIL import ImageFilter
             face_mask_pil = Image.fromarray(face_mask_array, mode='L')
-            face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(5))  # Dilate
+            face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(10))  # Increased from 5 to 10
             face_mask_array = np.array(face_mask_pil)
+        
+        # Also protect top portion of image (head/face/neck region) - extra safety
+        face_mask_array[:int(face_mask_array.shape[0] * 0.40), :] = 255  # Top 40% is always protected
         
         logger.info(f"Face mask created: {np.sum(face_mask_array == 255)} white pixels ({np.sum(face_mask_array == 255)/face_mask_array.size*100:.1f}% of image)")
         
@@ -605,10 +610,23 @@ class ImageProcessor:
             
             # Also exclude top portion of image (head/face region) - extra protection
             head_region_mask = np.zeros((height, width), dtype=bool)
-            head_region_mask[:int(height * 0.35), :] = True  # Top 35% is head/face region
+            head_region_mask[:int(height * 0.40), :] = True  # Top 40% is head/face/neck region (increased from 35%)
             
-            # Remove face and head region from clothing mask
-            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask)
+            # Exclude hands: Usually in lower-middle region, detect skin tones
+            # Skin tones: High R and G, medium B
+            skin_mask = (r > 120) & (g > 100) & (b < r * 0.9) & (b < g * 0.9) & (r < 220) & (g < 200)
+            # Hands are usually in middle-lower region, not in clothing area
+            hands_region = np.zeros((height, width), dtype=bool)
+            # Exclude areas that might be hands (middle region, sides)
+            hands_region[int(height * 0.3):int(height * 0.7), :int(width * 0.15)] = True  # Left side
+            hands_region[int(height * 0.3):int(height * 0.7), int(width * 0.85):] = True  # Right side
+            
+            # Exclude background: Usually has different characteristics
+            # Background is often less saturated or has different color distribution
+            # For now, we'll rely on segmentation to exclude background
+            
+            # Remove face, head, hands, and background from clothing mask
+            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask) & (~hands_region)
             
             # Set clothing regions to white (255)
             mask_array[clothing_mask] = 255
@@ -681,20 +699,21 @@ class ImageProcessor:
                 logger.warning(f"Failed to create face mask: {e}, using fallback")
                 face_mask = None
         
-        face_protection_fallback = int(height * 0.30) if face_mask is None else None  # Increased from 20% to 30% for better face protection
+        face_protection_fallback = int(height * 0.40) if face_mask is None else None  # Increased to 40% for better face/head/neck protection
         
         # Apply face protection to mask - CRITICAL: Must protect face completely
         if face_mask is not None:
             mask_array = np.array(mask)
             face_mask_array = np.array(face_mask)
             # Protect face area: set to 0 (black = preserve, don't change)
-            mask_array[face_mask_array > 50] = 0  # Lower threshold (was 127) to protect more face area
+            # Very low threshold to protect ALL face pixels, including edges
+            mask_array[face_mask_array > 10] = 0  # Very low threshold (was 50) to protect all face pixels
             mask = Image.fromarray(mask_array, mode='L')
             logger.info("Applied ControlNet face detection mask for face protection")
         else:
-            # Fallback: protect top 30% of image (increased from 20% to 30%)
+            # Fallback: protect top 40% of image (increased from 30% to 40%)
             mask_array = np.array(mask)
-            face_protection_zone = int(height * 0.30)  # Top 30% for face/head protection
+            face_protection_zone = int(height * 0.40)  # Top 40% for face/head/neck protection
             mask_array[:face_protection_zone, :] = 0  # Black = preserve face
             mask = Image.fromarray(mask_array, mode='L')
             logger.info(f"Using fallback face protection (top {face_protection_zone*100/height:.1f}%)")
@@ -753,11 +772,11 @@ class ImageProcessor:
         if face_mask is not None:
             face_mask_array = np.array(face_mask)
             # Protect face area aggressively: any pixel that might be face = black (preserve)
-            mask_array[face_mask_array > 30] = 0  # Very low threshold to protect all face pixels
+            mask_array[face_mask_array > 5] = 0  # Very low threshold (was 30) to protect all face pixels
             logger.info("Applied aggressive face protection before blur")
         else:
-            # Fallback: protect top 30% of image
-            face_protection_zone = int(height * 0.30)
+            # Fallback: protect top 40% of image
+            face_protection_zone = int(height * 0.40)
             mask_array[:face_protection_zone, :] = 0
             logger.info(f"Applied fallback face protection (top {face_protection_zone*100/height:.1f}%)")
         
@@ -774,13 +793,20 @@ class ImageProcessor:
         if face_mask is not None:
             face_mask_array = np.array(face_mask)
             # Final aggressive protection: any face pixel = black (0)
-            mask_array[face_mask_array > 20] = 0  # Very low threshold to ensure complete face protection
+            mask_array[face_mask_array > 5] = 0  # Very low threshold (was 20) to ensure complete face protection
             logger.info("Applied final aggressive face protection after blur")
         else:
-            # Final fallback: protect top 30% of image
-            face_protection_zone = int(height * 0.30)
+            # Final fallback: protect top 40% of image
+            face_protection_zone = int(height * 0.40)
             mask_array[:face_protection_zone, :] = 0
             logger.info(f"Applied final fallback face protection (top {face_protection_zone*100/height:.1f}%)")
+        
+        # Additional protection: Exclude hands and background areas
+        # Protect bottom corners and edges (likely background or hands)
+        mask_array[:int(height * 0.40), :] = 0  # Top 40% always protected (face/head)
+        # Protect very bottom (feet/shoes area)
+        mask_array[int(height * 0.95):, :] = 0  # Bottom 5% protected (feet/shoes)
+        logger.info("Applied additional protection for face, head, and feet areas")
         
         mask = Image.fromarray(mask_array, mode='L')
         logger.info("Applied moderate edge smoothing to prevent blurred rectangle overlay artifacts")
@@ -827,7 +853,7 @@ class ImageProcessor:
         
         # Fallback: if face detection failed, use conservative top 20% protection
         # This is much smaller than before to allow shirt collar to be changed
-        face_protection_fallback = int(height * 0.30) if face_mask is None else None  # Increased from 20% to 30% for better face protection
+        face_protection_fallback = int(height * 0.40) if face_mask is None else None  # Increased to 40% for better face/head/neck protection
         
         # CLOTHING REGION: Cover ALL clothes (shirt + pants)
         # Shirt region: start from very top to catch full shirt including collar
