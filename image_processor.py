@@ -528,16 +528,17 @@ class ImageProcessor:
                 "new clothing", "replacement clothing", "different fit", "altered design"
             ])
         
-        # EXCLUDE pants from prompt - only change upper body
-        # if clothing_items.get('has_pants', False):  # DISABLED - only change upper body
-        #     prompt_parts.extend([
-        #         "same pants style", "same trousers style", "white color pants",
-        #         "white colored pants", "white colored trousers", "white color only"
-        #     ])
-        #     negative_parts.extend([
-        #         "dark pants", "black pants", "gray pants", 
-        #         "jeans", "colored pants"
-        #     ])
+        # INCLUDE pants in prompt - change entire clothing to white
+        if clothing_items.get('has_pants', False):  # Include pants if detected
+            prompt_parts.extend([
+                "same pants style", "same trousers style", "white color pants",
+                "white colored pants", "white colored trousers", "white color only",
+                "white colored jeans", "white pants", "white trousers"
+            ])
+            negative_parts.extend([
+                "dark pants", "black pants", "gray pants", 
+                "jeans", "colored pants", "blue jeans", "dark jeans"
+            ])
         
         # Common parts - emphasize COLOR CHANGE ONLY
         prompt_parts.extend([
@@ -596,15 +597,15 @@ class ImageProcessor:
             shirt_mask = (r > 100) & (r > g * 0.8) & (r > b * 0.8) & (r < 255)
             
             # Detect pants/legs: Blue/cyan tones (high blue, blue > red and green)
-            # EXCLUDE pants - only change upper body
+            # INCLUDE pants - change entire clothing to white
             pants_mask = (b > 100) & (b > r * 0.8) & (b > g * 0.8) & (b < 255)
             
             # Detect arms: Similar to shirt but might be slightly different
             # Look for red/pink tones that are not face (face is usually brighter/yellow)
             arms_mask = (r > 80) & (r > g * 0.7) & (r > b * 0.7) & (r < 200)
             
-            # Combine ONLY upper body regions (shirt + arms), EXCLUDE pants
-            clothing_mask = shirt_mask | arms_mask  # Removed pants_mask - only upper body
+            # Combine ALL clothing regions (shirt + pants + arms) - change entire clothing
+            clothing_mask = shirt_mask | pants_mask | arms_mask  # Include all clothing
             
             # Exclude face/head: Yellow/orange tones (high R and G, low B)
             # Also exclude skin tones and head region
@@ -627,13 +628,9 @@ class ImageProcessor:
             # Background is often less saturated or has different color distribution
             # For now, we'll rely on segmentation to exclude background
             
-            # Remove face, head, hands, background, AND pants from clothing mask
-            # Exclude lower portion (pants area) - only upper body
-            pants_region_mask = np.zeros((height, width), dtype=bool)
-            pants_region_mask[int(height * 0.65):, :] = True  # Bottom 35% is pants/legs region
-            
-            # Remove face, head, hands, background, and pants from clothing mask
-            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask) & (~hands_region) & (~pants_region_mask)
+            # Remove face, head, hands, and background from clothing mask
+            # Keep pants - we want to change entire clothing (shirt + pants) to white
+            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask) & (~hands_region)
             
             # Set clothing regions to white (255)
             mask_array[clothing_mask] = 255
@@ -732,10 +729,10 @@ class ImageProcessor:
             logger.warning(f"Segmentation mask too small ({white_ratio*100:.1f}%), using geometric mask as fallback")
             draw = ImageDraw.Draw(mask)
             
-            # Use geometric mask to cover ONLY upper body (shirt) areas - EXCLUDE pants
+            # Use geometric mask to cover ENTIRE clothing (shirt + pants) areas
             if clothing_items.get('has_shirt', True):
                 shirt_top = int(height * 0.10)
-                shirt_bottom = int(height * 0.75)  # Stop at waist - don't include pants area
+                shirt_bottom = int(height * 0.80)  # Extend to cover full shirt including lower part
                 chest_left = int(width * 0.05)
                 chest_right = int(width * 0.95)
                 shoulder_left = int(width * 0.00)
@@ -744,14 +741,24 @@ class ImageProcessor:
                 draw.rectangle([(chest_left, shirt_top), (chest_right, shirt_bottom)], fill=255)
                 draw.rectangle([(shoulder_left, shirt_top), (chest_left, shirt_bottom)], fill=255)
                 draw.rectangle([(chest_right, shirt_top), (shoulder_right, shirt_bottom)], fill=255)
+                logger.info("Masked shirt area (entire upper body)")
             
-            # EXCLUDE pants from mask - only change upper body
-            # if clothing_items.get('has_pants', False):
-            #     pants_top = int(height * 0.65)
-            #     pants_bottom = int(height * 0.95)
-            #     pants_left = int(width * 0.15)
-            #     pants_right = int(width * 0.85)
-            #     draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
+            # INCLUDE pants in mask - change entire clothing to white
+            if clothing_items.get('has_pants', False):
+                pants_top = int(height * 0.65)
+                pants_bottom = int(height * 0.95)  # Cover full pants area
+                pants_left = int(width * 0.15)
+                pants_right = int(width * 0.85)
+                draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
+                logger.info("Masked pants area (entire lower body)")
+            else:
+                # Even if pants not detected, cover lower body area to ensure full clothing coverage
+                pants_top = int(height * 0.70)
+                pants_bottom = int(height * 0.92)
+                pants_left = int(width * 0.20)
+                pants_right = int(width * 0.80)
+                draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
+                logger.info("Masked lower body area (pants region)")
             
             # Re-apply face protection after geometric mask
             if face_mask is not None:
