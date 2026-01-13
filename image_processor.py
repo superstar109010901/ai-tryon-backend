@@ -554,6 +554,71 @@ class ImageProcessor:
         
         return prompt, negative_prompt
     
+    def create_clothing_mask_from_segmentation(
+        self,
+        segmentation_map: Image.Image,
+        original_image: Image.Image
+    ) -> Image.Image:
+        """
+        Create precise clothing mask from segmentation map.
+        Uses AI segmentation to detect ALL clothing regions (shirt, pants, sleeves, etc.)
+        
+        Args:
+            segmentation_map: Segmentation map from ControlNet
+            original_image: Original input image
+        
+        Returns:
+            PIL Image mask (white = clothing, black = everything else)
+        """
+        width, height = original_image.size
+        segmentation = segmentation_map.resize((width, height), Image.Resampling.LANCZOS)
+        seg_array = np.array(segmentation)
+        
+        # Create mask: start with ALL BLACK (preserve everything)
+        mask_array = np.zeros((height, width), dtype=np.uint8)
+        
+        # Segmentation colors typically:
+        # - Shirt/torso: Red/pink/magenta (RGB: high R, medium G/B)
+        # - Pants/legs: Blue/cyan (RGB: high B, medium R/G)
+        # - Arms: Often same as shirt or slightly different
+        # - Face/head: Yellow/orange (RGB: high R and G, low B)
+        
+        if len(seg_array.shape) == 3:
+            r, g, b = seg_array[:, :, 0], seg_array[:, :, 1], seg_array[:, :, 2]
+            
+            # Detect shirt/torso: Red/pink/magenta tones (high red, red > green and blue)
+            shirt_mask = (r > 100) & (r > g * 0.8) & (r > b * 0.8) & (r < 255)
+            
+            # Detect pants/legs: Blue/cyan tones (high blue, blue > red and green)
+            pants_mask = (b > 100) & (b > r * 0.8) & (b > g * 0.8) & (b < 255)
+            
+            # Detect arms: Similar to shirt but might be slightly different
+            # Look for red/pink tones that are not face (face is usually brighter/yellow)
+            arms_mask = (r > 80) & (r > g * 0.7) & (r > b * 0.7) & (r < 200)
+            
+            # Combine all clothing regions
+            clothing_mask = shirt_mask | pants_mask | arms_mask
+            
+            # Exclude face/head: Yellow/orange tones (high R and G, low B)
+            face_mask = (r > 150) & (g > 150) & (b < r * 0.7) & (b < g * 0.7)
+            
+            # Remove face from clothing mask
+            clothing_mask = clothing_mask & (~face_mask)
+            
+            # Set clothing regions to white (255)
+            mask_array[clothing_mask] = 255
+            
+            logger.info(f"Created clothing mask from segmentation: {np.sum(mask_array == 255)} white pixels ({np.sum(mask_array == 255)/mask_array.size*100:.1f}% of image)")
+        else:
+            # Grayscale segmentation - use threshold
+            # Higher values usually indicate body/clothing regions
+            threshold = np.percentile(seg_array, 50)  # Middle 50% as threshold
+            clothing_mask = seg_array > threshold
+            mask_array[clothing_mask] = 255
+            logger.info(f"Created clothing mask from grayscale segmentation: {np.sum(mask_array == 255)} white pixels")
+        
+        return Image.fromarray(mask_array, mode='L')
+    
     def generate_clothing_mask_from_segmentation(
         self, 
         image: Image.Image, 
@@ -562,7 +627,7 @@ class ImageProcessor:
     ) -> Tuple[Image.Image, Dict[str, bool]]:
         """
         Generate clothing mask based on detected clothing from segmentation.
-        Only masks clothing that actually exists in the image.
+        Uses AI segmentation to detect ALL clothing regions across entire image.
         
         Args:
             image: Input PIL Image
@@ -584,8 +649,22 @@ class ImageProcessor:
             except Exception as e:
                 logger.warning(f"Clothing detection from segmentation failed: {e}, using defaults")
         
-        # Create mask: start with ALL BLACK (preserve everything)
-        mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
+        # Create mask from segmentation if available (AI-based detection)
+        if segmentation_map is not None:
+            try:
+                logger.info("Creating clothing mask from AI segmentation map...")
+                mask = self.create_clothing_mask_from_segmentation(segmentation_map, image)
+                mask_array = np.array(mask)
+                logger.info(f"✅ AI segmentation mask created: {np.sum(mask_array == 255)} white pixels ({np.sum(mask_array == 255)/mask_array.size*100:.1f}% of image)")
+            except Exception as e:
+                logger.warning(f"Failed to create mask from segmentation: {e}, using geometric mask")
+                mask = Image.new("L", (width, height), 0)
+                mask_array = np.array(mask)
+        else:
+            # Fallback to geometric mask if segmentation not available
+            logger.warning("No segmentation map available, using geometric mask")
+            mask = Image.new("L", (width, height), 0)
+            mask_array = np.array(mask)
         
         # Create face protection mask
         face_mask = None
@@ -599,81 +678,57 @@ class ImageProcessor:
         
         face_protection_fallback = int(height * 0.20) if face_mask is None else None
         
-        draw = ImageDraw.Draw(mask)
-        
-        # Only mask clothing that exists
-        if clothing_items.get('has_shirt', True):
-            # Shirt region
-            shirt_top = int(height * 0.15)
-            shirt_bottom = int(height * 0.78)
-            chest_left = int(width * 0.08)
-            chest_right = int(width * 0.92)
-            shoulder_left = int(width * 0.02)
-            shoulder_right = int(width * 0.98)
-            
-            # Main torso/chest
-            draw.rectangle(
-                [(chest_left, shirt_top), (chest_right, shirt_bottom)],
-                fill=255  # White = change shirt
-            )
-            
-            # Arms
-            left_arm_bottom = int(height * 0.75)
-            draw.rectangle(
-                [(shoulder_left, shirt_top), (chest_left, left_arm_bottom)],
-                fill=255  # White = change sleeves
-            )
-            draw.rectangle(
-                [(chest_right, shirt_top), (shoulder_right, left_arm_bottom)],
-                fill=255  # White = change sleeves
-            )
-            logger.info("Masked shirt area")
-        
-        if clothing_items.get('has_pants', False):
-            # Pants region - only if pants detected
-            pants_top = int(height * 0.70)
-            pants_bottom = int(height * 0.92)
-            pants_left = int(width * 0.20)
-            pants_right = int(width * 0.80)
-            
-            draw.rectangle(
-                [(pants_left, pants_top), (pants_right, pants_bottom)],
-                fill=255  # White = change pants
-            )
-            logger.info("Masked pants area")
-        else:
-            logger.info("No pants detected - skipping pants mask")
-        
-        # Apply face protection
+        # Apply face protection to mask
         if face_mask is not None:
             mask_array = np.array(mask)
             face_mask_array = np.array(face_mask)
-            mask_array[face_mask_array > 127] = 0
+            mask_array[face_mask_array > 127] = 0  # Protect face area
             mask = Image.fromarray(mask_array, mode='L')
-            logger.info("Applied ControlNet face detection mask")
-        else:
-            draw.rectangle(
-                [(0, 0), (width, face_protection_fallback)],
-                fill=0  # Black = preserve face
-            )
+            logger.info("Applied ControlNet face detection mask for face protection")
+        elif face_protection_fallback:
+            # Fallback: protect top 20% of image
+            mask_array = np.array(mask)
+            mask_array[:face_protection_fallback, :] = 0
+            mask = Image.fromarray(mask_array, mode='L')
             logger.info(f"Using fallback face protection (top {face_protection_fallback*100/height:.1f}%)")
         
-        # Re-draw clothing after face protection
-        draw = ImageDraw.Draw(mask)
-        if clothing_items.get('has_shirt', True):
-            draw.rectangle([(chest_left, shirt_top), (chest_right, shirt_bottom)], fill=255)
-            draw.rectangle([(shoulder_left, shirt_top), (chest_left, left_arm_bottom)], fill=255)
-            draw.rectangle([(chest_right, shirt_top), (shoulder_right, left_arm_bottom)], fill=255)
-        
-        if clothing_items.get('has_pants', False):
-            draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
-        
-        # Re-apply face protection
-        if face_mask is not None:
-            mask_array = np.array(mask)
-            face_mask_array = np.array(face_mask)
-            mask_array[face_mask_array > 127] = 0
-            mask = Image.fromarray(mask_array, mode='L')
+        # If segmentation mask is too small, fallback to geometric mask
+        mask_array = np.array(mask)
+        white_ratio = np.sum(mask_array == 255) / mask_array.size
+        if white_ratio < 0.05:  # Less than 5% white pixels - mask might be too small
+            logger.warning(f"Segmentation mask too small ({white_ratio*100:.1f}%), using geometric mask as fallback")
+            draw = ImageDraw.Draw(mask)
+            
+            # Use geometric mask to cover clothing areas
+            if clothing_items.get('has_shirt', True):
+                shirt_top = int(height * 0.10)
+                shirt_bottom = int(height * 0.85)
+                chest_left = int(width * 0.05)
+                chest_right = int(width * 0.95)
+                shoulder_left = int(width * 0.00)
+                shoulder_right = int(width * 1.00)
+                
+                draw.rectangle([(chest_left, shirt_top), (chest_right, shirt_bottom)], fill=255)
+                draw.rectangle([(shoulder_left, shirt_top), (chest_left, shirt_bottom)], fill=255)
+                draw.rectangle([(chest_right, shirt_top), (shoulder_right, shirt_bottom)], fill=255)
+            
+            if clothing_items.get('has_pants', False):
+                pants_top = int(height * 0.65)
+                pants_bottom = int(height * 0.95)
+                pants_left = int(width * 0.15)
+                pants_right = int(width * 0.85)
+                draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
+            
+            # Re-apply face protection after geometric mask
+            if face_mask is not None:
+                mask_array = np.array(mask)
+                face_mask_array = np.array(face_mask)
+                mask_array[face_mask_array > 127] = 0
+                mask = Image.fromarray(mask_array, mode='L')
+            elif face_protection_fallback:
+                mask_array = np.array(mask)
+                mask_array[:face_protection_fallback, :] = 0
+                mask = Image.fromarray(mask_array, mode='L')
         
         # Final cleanup - balanced mask with moderate blur for smooth edges
         mask_array = np.array(mask)
@@ -687,15 +742,28 @@ class ImageProcessor:
         mask_array = np.array(mask_pil)
         mask_array = np.where(mask_array > 100, 255, 0).astype(np.uint8)  # Balanced threshold for smooth edges
         
-        # Re-apply face protection
+        # Final cleanup with smooth edges to prevent visible overlay artifacts
+        mask_array = np.array(mask)
+        mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
+        
+        # Apply moderate edge smoothing (very light blur) to prevent hard edges
+        # But NOT too much blur - that creates the blurred rectangle overlay artifact
+        mask_pil = Image.fromarray(mask_array, mode='L')
+        mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=2))  # Moderate blur (radius=2) for smooth edges
+        
+        # Re-threshold after moderate blur - keep it mostly sharp
+        mask_array = np.array(mask_pil)
+        mask_array = np.where(mask_array > 100, 255, 0).astype(np.uint8)  # Balanced threshold for smooth edges
+        
+        # Final face protection check
         if face_mask is not None:
             face_mask_array = np.array(face_mask)
             mask_array[face_mask_array > 127] = 0
-        else:
+        elif face_protection_fallback:
             mask_array[:face_protection_fallback, :] = 0
         
         mask = Image.fromarray(mask_array, mode='L')
-        logger.info("Applied minimal edge smoothing to prevent blurred rectangle overlay artifacts")
+        logger.info("Applied moderate edge smoothing to prevent blurred rectangle overlay artifacts")
         
         return mask, clothing_items
     
