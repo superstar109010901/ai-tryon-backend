@@ -152,7 +152,7 @@ class ImageProcessor:
                 mask=mask,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                denoising_strength=0.30,  # Low denoising (0.25-0.35): locks full body, preserves face, changes only clothes
+                denoising_strength=0.35,  # Balanced denoising (0.30-0.35): ensures shirt changes while preserving face
                 steps=30,  # More steps for better quality and blending
                 cfg_scale=6,  # Balanced CFG for natural results
                 sampler_name="DPM++ SDE",
@@ -500,12 +500,18 @@ class ImageProcessor:
             prompt_parts.extend([
                 "white cotton shirt", "white button-up shirt", 
                 "white long-sleeved shirt", "white shirt", 
-                "clean white fabric", "white sleeves"
+                "clean white fabric", "white sleeves",
+                "visible white shirt", "clear white shirt", 
+                "fully visible white clothing", "white shirt clearly visible",
+                "white shirt not hidden", "white shirt unobstructed"
             ])
             negative_parts.extend([
                 "gray shirt", "black shirt", "colored shirt", 
                 "dark shirt", "blue shirt", "red shirt", 
-                "charcoal shirt", "grey shirt", "dark grey shirt"
+                "charcoal shirt", "grey shirt", "dark grey shirt",
+                "hidden shirt", "obscured shirt", "covered shirt",
+                "translucent object", "semi-transparent", "foggy",
+                "blurred clothing", "unclear shirt", "invisible shirt"
             ])
         
         if clothing_items.get('has_pants', False):  # Only if pants detected
@@ -522,7 +528,9 @@ class ImageProcessor:
             "natural clothing texture", "seamlessly integrated", 
             "natural clothing replacement", "realistic white clothing",
             "same person", "same pose", "same background", 
-            "natural fabric folds", "professional white clothing"
+            "natural fabric folds", "professional white clothing",
+            "clearly visible clothing", "sharp white shirt", 
+            "crisp white fabric", "well-lit white shirt"
         ])
         
         prompt = ", ".join(prompt_parts)
