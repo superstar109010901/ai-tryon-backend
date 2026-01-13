@@ -209,6 +209,8 @@ class VastAIClient:
             
             # Build payload matching exact format for img2img INPAINT
             # Must include inpainting parameters for proper inpainting mode
+            # CRITICAL: Use inpainting_fill: 0 (latent noise) for natural blending, not 1 (original)
+            # inpainting_fill: 0 = better blending, 1 = can look pasted/overlaid
             payload = {
                 "init_images": [image_base64],
                 "mask": mask_b64,
@@ -220,11 +222,11 @@ class VastAIClient:
                 "sampler_name": sampler_name,
                 "width": width,
                 "height": height,
-                "inpainting_fill": 1,  # 1 = original (preserve original colors in masked area)
-                "inpaint_full_res": True,  # Full resolution inpainting
-                "inpaint_full_res_padding": 32,  # Padding for full res
+                "inpainting_fill": 0,  # 0 = latent noise (better blending), 1 = original (can look pasted)
+                "inpaint_full_res": False,  # False = better blending, True = can create artifacts
+                "inpaint_full_res_padding": 0,  # Not needed when inpaint_full_res is False
                 "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
-                "mask_blur": 4,  # Slight blur for smoother edges
+                "mask_blur": 8,  # Higher blur (8-12) for smoother, more natural edges
             }
             
             # Add ControlNet using alwayson_scripts format with exact structure

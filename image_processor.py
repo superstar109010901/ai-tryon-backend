@@ -128,21 +128,20 @@ class ImageProcessor:
                 logger.warning(f"Could not save debug mask: {e}")
             
             # Generate image using Vast.ai img2img INPAINT API with inpainting
-            # CRITICAL: ControlNet inpaint model can prevent changes - disable or use very low weight
-            # Use high denoising + strong prompt to force shirt change while mask protects face
+            # Use balanced denoising + natural blending parameters for seamless clothing replacement
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt="white cotton shirt, clean white fabric, white shirt, plain white shirt, natural fabric texture, realistic white clothing, professional white shirt",
-                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt, dark shirt, blue shirt, red shirt",
-                denoising_strength=0.85,  # High denoising to force changes in masked area
-                steps=30,  # More steps for better quality
-                cfg_scale=7,  # Higher CFG to make prompt more influential
+                prompt="white cotton shirt, clean white fabric, natural shirt texture, seamlessly integrated, natural clothing replacement, realistic white shirt, same person, same pose, same background, natural fabric folds, professional white shirt",
+                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt, dark shirt, blue shirt, red shirt, pasted, overlaid, digital overlay, sharp edges, visible seams",
+                denoising_strength=0.65,  # Balanced: enough to change shirt naturally, not too aggressive
+                steps=30,  # More steps for better quality and blending
+                cfg_scale=6,  # Balanced CFG for natural results
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
                 # ControlNet disabled - it was preventing changes
-                # Mask alone should protect face, high denoising will change shirt
+                # Mask alone should protect face, balanced denoising will change shirt naturally
                 controlnet_enabled=False,  # DISABLED: ControlNet was preventing shirt changes
                 controlnet_model="controlnet-inpaint-dreamer-sdxl",
                 controlnet_module="none",
