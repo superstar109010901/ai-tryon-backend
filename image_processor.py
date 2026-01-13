@@ -164,10 +164,10 @@ class ImageProcessor:
                 controlnet_pose_model="controlnet-openpose-sdxl",  # OpenPose model
                 controlnet_pose_weight=1.0,  # Weight 1.0 for strong pose preservation
                 controlnet_pose_control_mode="ControlNet is more important",  # Strong control to preserve person
-                # ControlNet Unit 1: Inpaint guidance (helps with clothing replacement)
-                controlnet_inpaint_enabled=True,
-                controlnet_inpaint_model="controlnet-inpaint-sdxl",  # Inpaint model for guidance
-                controlnet_inpaint_weight=1.0,  # Weight 1.0 for inpainting guidance
+                # ControlNet Unit 1: Inpaint guidance (DISABLED - was causing blurred rectangle overlay)
+                controlnet_inpaint_enabled=False,  # DISABLED: Inpaint ControlNet was creating blurred overlay artifacts
+                controlnet_inpaint_model="controlnet-inpaint-sdxl",
+                controlnet_inpaint_weight=0.0,  # Disabled
                 controlnet_pixel_perfect=True  # Pixel perfect mode
             )
             
@@ -514,7 +514,11 @@ class ImageProcessor:
                 "blurred clothing", "unclear shirt", "invisible shirt",
                 "rectangle overlay", "square overlay", "rectangular overlay",
                 "visible mask", "mask edges", "overlay artifact", "red outline",
-                "yellow overlay", "brown overlay", "semi-transparent rectangle"
+                "yellow overlay", "brown overlay", "semi-transparent rectangle",
+                "blurred rectangle", "blurred square", "blurred overlay",
+                "semi-transparent overlay", "blurred area", "obscured person",
+                "hidden person", "blurred torso", "blurred body", "distorted image",
+                "wavy texture", "liquid texture", "blurred background", "blurred foreground"
             ])
         
         if clothing_items.get('has_pants', False):  # Only if pants detected
@@ -533,7 +537,9 @@ class ImageProcessor:
             "same person", "same pose", "same background", 
             "natural fabric folds", "professional white clothing",
             "clearly visible clothing", "sharp white shirt", 
-            "crisp white fabric", "well-lit white shirt"
+            "crisp white fabric", "well-lit white shirt",
+            "fully visible person", "clear person", "sharp person",
+            "no overlay", "no blur", "crisp image", "sharp image"
         ])
         
         prompt = ", ".join(prompt_parts)
@@ -665,20 +671,20 @@ class ImageProcessor:
             mask_array[face_mask_array > 127] = 0
             mask = Image.fromarray(mask_array, mode='L')
         
-        # Final cleanup with smooth edges to prevent visible rectangle overlay
+        # Final cleanup - precise mask without excessive blur to prevent blurred rectangle overlay
         mask_array = np.array(mask)
         mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
         
-        # Apply Gaussian blur to mask edges for seamless blending
-        # This prevents the visible rectangle/square overlay artifact
+        # Apply minimal edge smoothing (very light blur) to prevent hard edges
+        # But NOT too much blur - that creates the blurred rectangle overlay artifact
         mask_pil = Image.fromarray(mask_array, mode='L')
-        mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=4))  # Smooth edges
+        mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=1))  # Minimal blur (was 4, too much)
         
-        # Re-threshold after blur to maintain mostly black/white but with smooth transitions
+        # Re-threshold after minimal blur - keep it mostly sharp
         mask_array = np.array(mask_pil)
-        mask_array = np.where(mask_array > 50, 255, 0).astype(np.uint8)  # Lower threshold for smoother edges
+        mask_array = np.where(mask_array > 200, 255, 0).astype(np.uint8)  # Higher threshold (was 50) for sharper edges
         
-        # Re-apply face protection after blur
+        # Re-apply face protection
         if face_mask is not None:
             face_mask_array = np.array(face_mask)
             mask_array[face_mask_array > 127] = 0
@@ -686,7 +692,7 @@ class ImageProcessor:
             mask_array[:face_protection_fallback, :] = 0
         
         mask = Image.fromarray(mask_array, mode='L')
-        logger.info("Applied Gaussian blur to mask edges to prevent visible overlay artifacts")
+        logger.info("Applied minimal edge smoothing to prevent blurred rectangle overlay artifacts")
         
         return mask, clothing_items
     
