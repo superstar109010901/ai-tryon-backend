@@ -158,14 +158,14 @@ class ImageProcessor:
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
-                # ControlNet disabled - it was preventing changes
-                # Mask alone should protect face, balanced denoising will change shirt naturally
-                controlnet_enabled=False,  # DISABLED: ControlNet was preventing shirt changes
-                controlnet_model="controlnet-inpaint-dreamer-sdxl",
-                controlnet_module="none",
-                controlnet_weight=0.0,
-                controlnet_control_mode="Balanced",
-                controlnet_pixel_perfect=True
+                # ControlNet enabled for person preservation
+                # Using openpose_full to preserve person pose and structure
+                controlnet_enabled=True,  # Enabled: helps preserve person while changing clothes
+                controlnet_model="controlnet-openpose-sdxl-1.0",  # OpenPose model for person preservation
+                controlnet_module="openpose_full",  # Full body pose detection
+                controlnet_weight=1.0,  # Weight 1.0 for strong person preservation
+                controlnet_control_mode="ControlNet is more important",  # Strong control to preserve person
+                controlnet_pixel_perfect=True  # Pixel perfect mode
             )
             
             # Save generated image temporarily

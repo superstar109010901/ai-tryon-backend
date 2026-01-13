@@ -327,26 +327,22 @@ class VastAIClient:
                 "mask_blur": 8,  # Higher blur (8-12) for smoother, more natural edges
             }
             
-            # Add ControlNet using alwayson_scripts format with exact structure
-            # ControlNet settings tightened for better person preservation
+            # Add ControlNet using controlnet_units format
+            # This is the correct format for ControlNet in SD API
             if controlnet_enabled and controlnet_model:
-                payload["alwayson_scripts"] = {
-                    "ControlNet": {
-                        "args": [
-                            {
-                                "enabled": True,
-                                "model": controlnet_model,
-                                "module": controlnet_module if controlnet_module else "none",
-                                "weight": controlnet_weight,
-                                "control_mode": controlnet_control_mode,
-                                "pixel_perfect": controlnet_pixel_perfect,
-                                "resize_mode": "Crop and Resize"
-                            }
-                        ]
+                payload["controlnet_units"] = [
+                    {
+                        "enabled": True,
+                        "image": image_base64,  # Use original image for ControlNet
+                        "module": controlnet_module if controlnet_module else "none",
+                        "model": controlnet_model,
+                        "weight": controlnet_weight,
+                        "pixel_perfect": controlnet_pixel_perfect,
+                        "control_mode": controlnet_control_mode
                     }
-                }
+                ]
                 logger.info(f"ControlNet enabled: {controlnet_model} / {controlnet_module}")
-                logger.info(f"ControlNet weight: {controlnet_weight}, control_mode: {controlnet_control_mode}")
+                logger.info(f"ControlNet weight: {controlnet_weight}, control_mode: {controlnet_control_mode}, pixel_perfect: {controlnet_pixel_perfect}")
             else:
                 logger.warning("ControlNet is disabled")
             
