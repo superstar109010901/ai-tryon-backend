@@ -96,32 +96,42 @@ class ImageProcessor:
             if white_ratio < 0.05 or white_ratio > 0.40:
                 logger.warning(f"Mask white ratio ({white_ratio*100:.1f}%) seems unusual. Expected 10-30% for torso region.")
             
-            # Ensure top 45% is completely black (face/neck protection)
+            # Ensure top 40% is completely black (face/neck protection)
             height = mask_array.shape[0]
-            face_protection = int(height * 0.45)
+            face_protection = int(height * 0.40)
             mask_array[:face_protection, :] = 0
             mask = Image.fromarray(mask_array, mode='L')
             logger.info(f"Face/neck area (top {face_protection}px) forced to black")
             
+            # Final verification: ensure mask has sufficient white pixels for shirt area
+            final_white = np.sum(mask_array == 255)
+            final_white_ratio = final_white / mask_array.size
+            if final_white_ratio < 0.10:
+                logger.warning(f"Mask white ratio ({final_white_ratio*100:.1f}%) is very low. Shirt might not change.")
+            elif final_white_ratio > 0.50:
+                logger.warning(f"Mask white ratio ({final_white_ratio*100:.1f}%) is very high. Background might change.")
+            else:
+                logger.info(f"Mask white ratio ({final_white_ratio*100:.1f}%) is good for shirt replacement.")
+            
             # Generate image using Vast.ai img2img INPAINT API with inpainting + ControlNet
-            # Using exact payload structure: low denoise (0.4) + inpainting params + tightened ControlNet
+            # Balance: Allow shirt changes while preserving person (face, pose, background)
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt="plain white cotton shirt, clean fabric, natural fabric folds, realistic clothing texture",
-                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation",
-                denoising_strength=0.4,  # Low denoise: freeze everything except torso
+                prompt="white cotton shirt, clean white fabric, natural shirt texture, realistic clothing, same person, same pose, same background",
+                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt",
+                denoising_strength=0.75,  # Balanced: enough to change shirt, not enough to change face
                 steps=25,
                 cfg_scale=5,
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
-                # ControlNet configuration - tightened for person preservation
+                # ControlNet configuration - balanced for person preservation + shirt change
                 controlnet_enabled=True,
                 controlnet_model="controlnet-inpaint-dreamer-sdxl",
                 controlnet_module="none",
-                controlnet_weight=1.2,  # Increased weight for stronger control
-                controlnet_control_mode="ControlNet is more important",  # Tell SD: DO NOT IGNORE THE PERSON
+                controlnet_weight=1.0,  # Balanced weight: preserve person but allow shirt change
+                controlnet_control_mode="Balanced",  # Balanced mode allows changes in masked area
                 controlnet_pixel_perfect=True
             )
             
@@ -323,23 +333,24 @@ class ImageProcessor:
         # This is critical - we only mark shirt area as white
         mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
         
-        # CRITICAL: Face and neck protection zone (top 45% - MUST be black)
+        # CRITICAL: Face and neck protection zone (top 40% - MUST be black)
         # Even ONE white pixel in face area will cause face changes
-        face_neck_bottom = int(height * 0.45)
+        face_neck_bottom = int(height * 0.40)
         
         # Torso region (chest, upper arms, shoulders)
         # Start BELOW neck, end before lower body
-        torso_top = int(height * 0.45)  # Start below neck (safe zone)
-        torso_bottom = int(height * 0.80)  # End before lower body/waist
+        # Make mask slightly larger to ensure full shirt coverage
+        torso_top = int(height * 0.38)  # Start slightly above previous to catch shirt top
+        torso_bottom = int(height * 0.82)  # Extend slightly lower for full shirt coverage
         
-        # Chest area (center torso)
-        chest_left = int(width * 0.18)  # Left edge of chest
-        chest_right = int(width * 0.82)  # Right edge of chest
+        # Chest area (center torso) - make slightly wider
+        chest_left = int(width * 0.15)  # Left edge of chest (wider)
+        chest_right = int(width * 0.85)  # Right edge of chest (wider)
         
         # Upper arms and shoulders (wider than chest)
         # Shoulders extend beyond chest but stay within person bounds
-        shoulder_left = int(width * 0.08)  # Left shoulder/arm
-        shoulder_right = int(width * 0.92)  # Right shoulder/arm
+        shoulder_left = int(width * 0.05)  # Left shoulder/arm (wider coverage)
+        shoulder_right = int(width * 0.95)  # Right shoulder/arm (wider coverage)
         
         # Draw torso region: chest + upper arms + shoulders
         draw = ImageDraw.Draw(mask)
@@ -351,16 +362,18 @@ class ImageProcessor:
         )
         
         # Left upper arm and shoulder (WHITE = change this area)
+        # Extend arms to cover full sleeve area
         left_arm_top = torso_top
-        left_arm_bottom = int(height * 0.65)  # Upper arm ends mid-torso
+        left_arm_bottom = int(height * 0.70)  # Upper arm extends further down
         draw.rectangle(
             [(shoulder_left, left_arm_top), (chest_left, left_arm_bottom)],
             fill=255  # White = upper arm/shoulder area (shirt sleeve)
         )
         
         # Right upper arm and shoulder (WHITE = change this area)
+        # Extend arms to cover full sleeve area
         right_arm_top = torso_top
-        right_arm_bottom = int(height * 0.65)  # Upper arm ends mid-torso
+        right_arm_bottom = int(height * 0.70)  # Upper arm extends further down
         draw.rectangle(
             [(chest_right, right_arm_top), (shoulder_right, right_arm_bottom)],
             fill=255  # White = upper arm/shoulder area (shirt sleeve)
