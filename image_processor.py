@@ -635,6 +635,15 @@ class ImageProcessor:
             # Set clothing regions to white (255)
             mask_array[clothing_mask] = 255
             
+            # FIX 1: ALWAYS force geometric shirt inclusion (handles dark clothes: black, navy, dark green, shadowed)
+            # Color-based detection fails on dark clothes, so we MUST include geometric shirt region
+            # This ensures shirt is ALWAYS in mask, regardless of segmentation success
+            # Shirt geometry: 15%-65% height (as per requirement), but we'll apply it and let face protection handle exclusion
+            y_coords, x_coords = np.ogrid[:height, :width]
+            shirt_geom = (y_coords > 0.15 * height) & (y_coords < 0.65 * height)
+            mask_array[shirt_geom] = 255  # Force shirt inclusion (face protection will remove top 40% later)
+            logger.info(f"✅ FIX 1: Forced geometric shirt inclusion (15%-65% height) to handle dark clothes")
+            
             logger.info(f"Created clothing mask from segmentation: {np.sum(mask_array == 255)} white pixels ({np.sum(mask_array == 255)/mask_array.size*100:.1f}% of image)")
         else:
             # Grayscale segmentation - use threshold
