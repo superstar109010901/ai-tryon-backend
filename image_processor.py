@@ -515,17 +515,14 @@ class ImageProcessor:
             "digital overlay", "sharp edges", "visible seams"
         ]
         
-        # TRUE TRY-ON: Garment replacement (not pure recolor)
-        # For true try-on: Shirt is replaced entirely, some style change is acceptable
-        # SDXL is appropriate for this use case
-        # Prompts emphasize REPLACEMENT, not just color change
+        # FINAL FIX: Shirt prompt must say "wearing" - not "replaced with"
+        # "wearing" tells SDXL the person is WEARING it, not that it's a separate scene object
+        # Without "wearing", SDXL preserves original and places new shirt as separate object
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
-                "the original shirt is replaced with a plain white shirt",  # REPLACE language for true try-on
-                "new white shirt", "replacement white shirt",  # Emphasize replacement
-                "pure white shirt", "RGB(255,255,255)",
-                "neutral white fabric", "white colored shirt",
-                "white colored sleeves", "white fabric color"
+                "wearing a plain white shirt",  # FINAL FIX: "wearing" language (not "replaced with")
+                "plain white shirt", "white shirt",
+                "RGB(255,255,255)", "neutral white fabric"
             ])
             negative_parts.extend([
                 "gray shirt", "black shirt", "colored shirt", 
@@ -545,31 +542,26 @@ class ImageProcessor:
                 "new clothing", "replacement clothing", "different fit", "altered design"
             ])
         
-        # RECOLOR FIX #3: Make color dominant for pants too - remove style anchoring
+        # Pants: Current setup is already correct (per user feedback)
         if clothing_items.get('has_pants', False):  # Include pants if detected
             prompt_parts.extend([
-                "pure white pants", "pure white trousers", "all clothing is white",
-                "RGB(255,255,255)", "white colored pants", "white colored trousers",
-                "white colored jeans", "white pants", "white trousers"
+                "wearing white pants", "wearing white trousers",  # FINAL FIX: "wearing" language
+                "white pants", "white trousers", "white colored pants"
             ])
             negative_parts.extend([
                 "dark pants", "black pants", "gray pants", 
                 "jeans", "colored pants", "blue jeans", "dark jeans"
             ])
         
-        # TRUE TRY-ON: Emphasize garment REPLACEMENT (not recolor)
-        # Preserve structure (person, pose, background) but allow garment replacement
-        # Some style change is acceptable for true try-on
+        # FINAL FIX: Remove preservation language - it interferes with "wearing" prompt
+        # Keep only essential structure preservation via ControlNet (not prompts)
         prompt_parts.extend([
-            "the original clothing is replaced with white clothing",  # REPLACE language for true try-on
-            "new white clothing", "replacement white garment",  # Emphasize replacement
+            "wearing white clothing",  # FINAL FIX: "wearing" language for pants too
             "RGB(255,255,255)", "neutral white fabric",
             "white color clothing", "white colored fabric",
-            "same person", "same pose", "same background",  # Preserve structure
             "natural fabric texture", "white fabric texture",
             "clearly visible white colored clothing", "sharp white colored shirt", 
             "crisp white colored fabric", "well-lit white colored clothing",
-            "fully visible person", "clear person", "sharp person",
             "no overlay", "no blur", "crisp image", "sharp image"
         ])
         
