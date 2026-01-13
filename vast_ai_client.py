@@ -5,6 +5,7 @@ Handles communication with Vast.ai's Stable Diffusion API for img2img generation
 
 import base64
 import io
+import asyncio
 import aiohttp
 import logging
 from typing import Dict, Optional
@@ -23,20 +24,22 @@ class VastAIClient:
     and handles the response.
     """
     
-    def __init__(self, api_url: str, timeout: int = 300):
+    def __init__(self, api_url: str, timeout: int = 600):
         """
         Initialize Vast.ai API client.
         
         Args:
             api_url: Base URL of Vast.ai SD API (e.g., "http://localhost:8081")
-            timeout: Request timeout in seconds (default: 300 for image generation)
+            timeout: Request timeout in seconds (default: 600 = 10 minutes for image generation)
         """
         self.api_url = api_url.rstrip('/')
         self.img2img_endpoint = f"{self.api_url}/sdapi/v1/img2img"
         self.controlnet_detect_endpoint = f"{self.api_url}/controlnet/detect"  # For segmentation preprocessing
         self.timeout = timeout
+        self.max_retries = 2  # Retry up to 2 times for transient failures
         logger.info(f"Initialized Vast.ai client with API URL: {self.api_url}")
         logger.info(f"ControlNet detect endpoint: {self.controlnet_detect_endpoint}")
+        logger.info(f"Timeout: {self.timeout}s, Max retries: {self.max_retries}")
     
     def _image_to_base64(self, image: Image.Image) -> str:
         """
@@ -252,42 +255,111 @@ class VastAIClient:
             else:
                 logger.warning("ControlNet is disabled")
             
-            # Send request to Vast.ai API
+            # Send request to Vast.ai API with retry mechanism
             logger.info(f"Sending img2img request to {self.img2img_endpoint}")
             logger.info(f"Prompt: {prompt[:100]}...")
             logger.info(f"Parameters: steps={steps}, denoising_strength={denoising_strength}, cfg_scale={cfg_scale}")
             
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
-                async with session.post(
-                    self.img2img_endpoint,
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        error_msg = f"Vast.ai API error {response.status}: {error_text}"
-                        logger.error(f"API Request failed:")
-                        logger.error(f"  URL: {self.img2img_endpoint}")
-                        logger.error(f"  Status: {response.status}")
-                        logger.error(f"  Error: {error_text}")
-                        raise Exception(error_msg)
+            # Retry mechanism for transient failures
+            last_error = None
+            for attempt in range(self.max_retries + 1):
+                try:
+                    if attempt > 0:
+                        logger.info(f"Retry attempt {attempt}/{self.max_retries}...")
+                        await asyncio.sleep(2 * attempt)  # Exponential backoff
                     
-                    result = await response.json()
+                    # Create timeout with separate connect and read timeouts
+                    timeout = aiohttp.ClientTimeout(
+                        total=self.timeout,
+                        connect=30,  # 30s to establish connection
+                        sock_read=self.timeout  # Full timeout for reading response
+                    )
                     
-                    # Extract generated image from response
-                    if "images" not in result or len(result["images"]) == 0:
-                        raise Exception("No images returned from Vast.ai API")
-                    
-                    # Convert base64 response to PIL Image
-                    generated_image_base64 = result["images"][0]
-                    generated_image = self._base64_to_image(generated_image_base64)
-                    
-                    logger.info("Image generated successfully from Vast.ai API")
-                    return generated_image
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.post(
+                            self.img2img_endpoint,
+                            json=payload,
+                            headers={"Content-Type": "application/json"}
+                        ) as response:
+                            # Check response status
+                            if response.status == 200:
+                                try:
+                                    result = await response.json()
+                                except Exception as json_error:
+                                    error_text = await response.text()
+                                    logger.error(f"Failed to parse JSON response: {json_error}")
+                                    logger.error(f"Response text: {error_text[:500]}")
+                                    raise Exception(f"Invalid JSON response from API: {str(json_error)}")
+                                
+                                # Extract generated image from response
+                                if "images" not in result:
+                                    logger.error(f"Response missing 'images' key. Keys: {list(result.keys())}")
+                                    raise Exception("Response missing 'images' field")
+                                
+                                if len(result["images"]) == 0:
+                                    logger.error("Response 'images' array is empty")
+                                    raise Exception("No images returned from Vast.ai API")
+                                
+                                # Convert base64 response to PIL Image
+                                try:
+                                    generated_image_base64 = result["images"][0]
+                                    generated_image = self._base64_to_image(generated_image_base64)
+                                    logger.info(f"✅ Image generated successfully from Vast.ai API (attempt {attempt + 1})")
+                                    return generated_image
+                                except Exception as img_error:
+                                    logger.error(f"Failed to decode image from base64: {img_error}")
+                                    raise Exception(f"Failed to decode generated image: {str(img_error)}")
+                            
+                            elif response.status == 503 or response.status == 502:
+                                # Service unavailable or bad gateway - retry
+                                error_text = await response.text()
+                                logger.warning(f"API returned {response.status} (attempt {attempt + 1}/{self.max_retries + 1}): {error_text[:200]}")
+                                last_error = f"Vast.ai API temporarily unavailable ({response.status}): {error_text[:200]}"
+                                if attempt < self.max_retries:
+                                    continue  # Retry
+                                else:
+                                    raise Exception(last_error)
+                            
+                            else:
+                                # Other errors - don't retry
+                                error_text = await response.text()
+                                error_msg = f"Vast.ai API error {response.status}: {error_text[:500]}"
+                                logger.error(f"API Request failed:")
+                                logger.error(f"  URL: {self.img2img_endpoint}")
+                                logger.error(f"  Status: {response.status}")
+                                logger.error(f"  Error: {error_text[:500]}")
+                                raise Exception(error_msg)
+                
+                except asyncio.TimeoutError as e:
+                    last_error = f"Request timeout after {self.timeout}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                    logger.warning(f"{last_error}")
+                    if attempt < self.max_retries:
+                        continue  # Retry
+                    else:
+                        raise Exception(f"Request timeout: API did not respond within {self.timeout} seconds. The image generation may be taking too long.")
+                
+                except aiohttp.ClientConnectorError as e:
+                    last_error = f"Connection error: {str(e)}"
+                    logger.warning(f"{last_error} (attempt {attempt + 1}/{self.max_retries + 1})")
+                    if attempt < self.max_retries:
+                        continue  # Retry
+                    else:
+                        raise Exception(f"Failed to connect to Vast.ai API: {str(e)}. Check if the API server is running at {self.api_url}")
+                
+                except aiohttp.ServerDisconnectedError as e:
+                    last_error = f"Server disconnected: {str(e)}"
+                    logger.warning(f"{last_error} (attempt {attempt + 1}/{self.max_retries + 1})")
+                    if attempt < self.max_retries:
+                        continue  # Retry
+                    else:
+                        raise Exception(f"Server disconnected during request: {str(e)}")
+            
+            # If we get here, all retries failed
+            raise Exception(f"All retry attempts failed. Last error: {last_error}")
                     
         except aiohttp.ClientError as e:
             logger.error(f"Network error connecting to Vast.ai API: {e}")
-            raise Exception(f"Failed to connect to Vast.ai API: {str(e)}")
+            raise Exception(f"Network error: Failed to connect to Vast.ai API: {str(e)}")
         except Exception as e:
             logger.error(f"Error in Vast.ai API call: {e}")
             raise

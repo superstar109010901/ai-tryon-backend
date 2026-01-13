@@ -171,10 +171,21 @@ class ImageProcessor:
             }
             
         except Exception as e:
-            logger.error(f"Error processing image: {e}")
+            error_msg = str(e)
+            logger.error(f"❌ Error processing image: {error_msg}")
+            logger.error(f"Error type: {type(e).__name__}")
+            
+            # Provide more helpful error messages
+            if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                error_msg = f"Image generation timed out. The API may be overloaded or the image is too complex. Please try again."
+            elif "connection" in error_msg.lower() or "connect" in error_msg.lower():
+                error_msg = f"Cannot connect to image generation API. Please check if the server is running."
+            elif "no images" in error_msg.lower() or "images" in error_msg.lower():
+                error_msg = f"API did not return a generated image. The generation may have failed."
+            
             return {
                 "success": False,
-                "error": str(e)
+                "error": error_msg
             }
     
     def create_mask_from_segmentation(self, segmentation_map: Image.Image, original_image: Image.Image) -> Image.Image:
