@@ -157,22 +157,16 @@ class VastAIClient:
         prompt: str,
         negative_prompt: str = "",
         mask: Optional[Image.Image] = None,
-        denoising_strength: float = 0.75,
-        steps: int = 24,
-        cfg_scale: float = 5.0,
-        sampler_name: str = "DPM++ 2M Karras",
-        width: int = 512,
-        height: int = 640,
-        inpainting_fill: int = 1,
-        inpaint_full_res: bool = True,
-        inpaint_full_res_padding: int = 32,
-        mask_blur: int = 8,
+        denoising_strength: float = 0.65,
+        steps: int = 25,
+        cfg_scale: float = 5,
+        sampler_name: str = "DPM++ SDE",
+        width: int = 1024,
+        height: int = 1024,
         controlnet_enabled: bool = True,
-        controlnet_module: Optional[str] = "segmentation",
-        controlnet_model: Optional[str] = "control_v11p_sd15_seg",
-        controlnet_weight: float = 1.2,
-        controlnet_guidance_start: float = 0.0,
-        controlnet_guidance_end: float = 0.75,
+        controlnet_module: Optional[str] = "none",
+        controlnet_model: Optional[str] = "controlnet-inpaint-dreamer-sdxl",
+        controlnet_weight: float = 1.0,
         controlnet_control_mode: str = "Balanced",
         controlnet_pixel_perfect: bool = True
     ) -> Image.Image:
@@ -186,22 +180,18 @@ class VastAIClient:
             prompt: Positive prompt for generation
             negative_prompt: Negative prompt (what to avoid)
             mask: Mask image for inpainting (white=change, black=preserve)
-            denoising_strength: How much to change the image (0.0-1.0) - 0.48 for clothes, not face
-            steps: Number of inference steps - 25 for stable quality, low VRAM
-            cfg_scale: Guidance scale (how closely to follow prompt) - 5 prevents over-forcing
-            sampler_name: Sampler to use (e.g., "DPM++ 2M Karras")
+            denoising_strength: How much to change the image (0.0-1.0)
+            steps: Number of inference steps
+            cfg_scale: Guidance scale (how closely to follow prompt)
+            sampler_name: Sampler to use (e.g., "DPM++ SDE")
             width: Output image width
             height: Output image height
-            inpainting_fill: Inpainting fill mode (1=original)
-            inpaint_full_res: Use full resolution inpainting (preserves face details)
-            inpaint_full_res_padding: Padding for full resolution (32 for smooth boundaries)
-            controlnet_enabled: Whether to use ControlNet (True for pose preservation)
-            controlnet_module: ControlNet module name ("openpose" for pose)
-            controlnet_model: ControlNet model name ("control_sd15_openpose")
-            controlnet_weight: ControlNet weight (1.0 locks pose)
-            controlnet_guidance_start: When ControlNet starts (0.0 = from start)
-            controlnet_guidance_end: When ControlNet ends (0.9 = most of generation)
+            controlnet_enabled: Whether to use ControlNet
+            controlnet_module: ControlNet module name ("none" for inpaint models)
+            controlnet_model: ControlNet model name ("controlnet-inpaint-dreamer-sdxl")
+            controlnet_weight: ControlNet weight
             controlnet_control_mode: Control mode ("Balanced" for best results)
+            controlnet_pixel_perfect: Enable pixel perfect mode
         
         Returns:
             Generated PIL Image
@@ -210,56 +200,48 @@ class VastAIClient:
             # Convert image to base64
             image_base64 = self._image_to_base64(image)
             
-            # Build payload
+            # Convert mask to base64 if provided
+            mask_b64 = None
+            if mask is not None:
+                mask_b64 = self._image_to_base64(mask)
+            else:
+                raise Exception("Mask is required for clothing replacement - binary clothes-only mask must be provided")
+            
+            # Build payload matching exact format
             payload = {
                 "init_images": [image_base64],
+                "mask": mask_b64,
+                "denoising_strength": denoising_strength,
                 "prompt": prompt,
                 "negative_prompt": negative_prompt,
-                "denoising_strength": denoising_strength,
                 "steps": steps,
                 "cfg_scale": cfg_scale,
                 "sampler_name": sampler_name,
                 "width": width,
-                "height": height
+                "height": height,
             }
             
-            # Add mask for inpainting (REQUIRED - binary clothes-only mask)
-            # White = clothes (can change), Black = protected (face, hair, skin, body)
-            if mask is not None:
-                mask_base64 = self._image_to_base64(mask)
-                payload["mask"] = mask_base64
-                payload["inpainting_fill"] = inpainting_fill  # 1 = original
-                payload["inpaint_full_res"] = inpaint_full_res  # true = full resolution
-                payload["inpaint_full_res_padding"] = inpaint_full_res_padding  # 32
-                payload["inpaint_area"] = 1  # Inpaint masked area only (1 = masked area, 0 = whole picture)
-                payload["mask_blur"] = mask_blur  # Mask blur 6-10 (8 is middle)
-                logger.info(f"Using inpainting with binary mask (white=clothes, black=protected), inpaint_area=1, mask_blur={mask_blur}")
-            else:
-                raise Exception("Mask is required for clothing replacement - binary clothes-only mask must be provided")
-            
-            # Add ControlNet segmentation explicitly using alwayson_scripts format
-            # ControlNet must be explicitly enabled in API request, not relying on WebUI defaults
-            if controlnet_enabled and controlnet_module and controlnet_model:
-                # Use alwayson_scripts.controlnet.args format (explicit ControlNet)
+            # Add ControlNet using alwayson_scripts format with exact structure
+            if controlnet_enabled and controlnet_model:
                 payload["alwayson_scripts"] = {
-                    "controlnet": {
-                        "args": [{
-                            "input_image": image_base64,  # Use original image for segmentation
-                            "module": controlnet_module,  # "segmentation"
-                            "model": controlnet_model,  # "control_v11p_sd15_seg"
-                            "weight": controlnet_weight,  # ~1.2
-                            "guidance_start": controlnet_guidance_start,  # 0.0
-                            "guidance_end": controlnet_guidance_end,  # <= 0.8
-                            "control_mode": controlnet_control_mode,  # "Balanced"
-                            "pixel_perfect": controlnet_pixel_perfect,  # true
-                            "enabled": True
-                        }]
+                    "ControlNet": {
+                        "args": [
+                            {
+                                "enabled": True,
+                                "model": controlnet_model,
+                                "module": controlnet_module if controlnet_module else "none",
+                                "weight": controlnet_weight,
+                                "control_mode": controlnet_control_mode,
+                                "pixel_perfect": controlnet_pixel_perfect,
+                                "resize_mode": "Crop and Resize"
+                            }
+                        ]
                     }
                 }
-                logger.info(f"ControlNet segmentation enabled: {controlnet_module} / {controlnet_model}")
-                logger.info(f"ControlNet weight: {controlnet_weight}, guidance: {controlnet_guidance_start} to {controlnet_guidance_end}, pixel_perfect: {controlnet_pixel_perfect}")
+                logger.info(f"ControlNet enabled: {controlnet_model} / {controlnet_module}")
+                logger.info(f"ControlNet weight: {controlnet_weight}, control_mode: {controlnet_control_mode}")
             else:
-                logger.warning("ControlNet is disabled - segmentation will not be used during generation")
+                logger.warning("ControlNet is disabled")
             
             # Send request to Vast.ai API
             logger.info(f"Sending img2img request to {self.img2img_endpoint}")

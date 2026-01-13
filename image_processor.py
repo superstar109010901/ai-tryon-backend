@@ -72,10 +72,9 @@ class ImageProcessor:
             # Load image from bytes
             image = Image.open(io.BytesIO(image_data)).convert("RGB")
             
-            # Resize image to match target dimensions (512x640)
-            # Lower resolution increases pixel preservation resistance and allows better color replacement
-            target_width = 512
-            target_height = 640
+            # Resize image to match target dimensions (1024x1024)
+            target_width = 1024
+            target_height = 1024
             if image.size != (target_width, target_height):
                 image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 logger.info(f"Resized image to {image.size}")
@@ -95,32 +94,25 @@ class ImageProcessor:
                 mask = self.generate_clothing_mask(image)
             
             # Generate image using Vast.ai img2img API with inpainting + ControlNet
-            # Using inpainting with mask + ControlNet OpenPose to preserve face, pose, and only change clothing
+            # Using exact payload structure as specified
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt=STATIC_PROMPT,
-                negative_prompt=NEGATIVE_PROMPT,
-                denoising_strength=0.5,  # Fixed: allows clothes changes without affecting face (0.5-0.6 range)
-                steps=24,                  # Moderate steps (20-28 range)
-                cfg_scale=5.0,             # Reduced model authority (4.5-6 range) to prevent face rewriting
-                sampler_name="DPM++ 2M Karras",  # Fixed sampler
-                width=512,                 # Fixed width (lower resolution for better color replacement)
-                height=640,                # Reduced height (was 768) - lower resolution resists pixel preservation
-                inpainting_fill=1,         # Inpainting fill mode (1 = original)
-                inpaint_full_res=True,     # Full resolution inpainting
-                inpaint_full_res_padding=32,  # Padding for full resolution
-                mask_blur=8,               # Mask blur 6-10 (8 is middle)
-                # ControlNet segmentation enabled during generation
-                # Uses control_v11p_sd15_seg model with segmentation module
-                controlnet_enabled=True,    # Enabled for segmentation during generation
-                controlnet_model="control_v11p_sd15_seg",  # Segmentation model
-                controlnet_module="segmentation",  # Segmentation module
-                controlnet_weight=1.2,      # Weight ~1.2
-                controlnet_guidance_start=0.0,
-                controlnet_guidance_end=0.75,  # guidance_end <= 0.8
+                prompt="realistic white shirt, clean fabric, studio lighting",
+                negative_prompt="jacket, hoodie, logo, pattern",
+                denoising_strength=0.65,
+                steps=25,
+                cfg_scale=5,
+                sampler_name="DPM++ SDE",
+                width=1024,
+                height=1024,
+                # ControlNet configuration
+                controlnet_enabled=True,
+                controlnet_model="controlnet-inpaint-dreamer-sdxl",
+                controlnet_module="none",
+                controlnet_weight=1.0,
                 controlnet_control_mode="Balanced",
-                controlnet_pixel_perfect=True  # Pixel perfect mode
+                controlnet_pixel_perfect=True
             )
             
             # Save generated image temporarily

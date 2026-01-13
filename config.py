@@ -9,22 +9,22 @@ import os
 #
 # Option 1: Backend and SD WebUI on SAME Vast.ai server (RECOMMENDED)
 #   Use internal port: http://localhost:7860
-#   (SD WebUI runs on internal port 7860, maps to external 8081)
+#   (SD WebUI runs on internal port 7860, maps to external 48632)
 #
 # Option 2: Backend on different server (or local machine)
-#   Use external port: http://74.48.140.178:8081
-#   (Access SD WebUI from outside via external port 8081)
+#   Use external port: http://27.64.192.151:48632
+#   (Access SD WebUI from outside via external port 48632)
 #
 # Set via environment variable:
 #   export VAST_AI_SD_URL="http://localhost:7860"  # Same server (default)
-#   export VAST_AI_SD_URL="http://74.48.140.178:8081"  # Remote access
+#   export VAST_AI_SD_URL="http://27.64.192.151:48632"  # Remote access
 VAST_AI_SD_URL = os.getenv("VAST_AI_SD_URL", "http://localhost:7860")
 
 # Backend URL for serving images
 # This is the external URL where the backend is accessible
 # Used to construct full image URLs for frontend
-# IMPORTANT: This should be the external Vast.ai URL (port 36580 maps to internal 8384)
-BACKEND_URL = os.getenv("BACKEND_URL", "http://74.48.140.178:36580")
+# IMPORTANT: This should be the external Vast.ai URL (port 48277 maps to internal 8384)
+BACKEND_URL = os.getenv("BACKEND_URL", "http://27.64.192.151:48277")
 
 # ControlNet Configuration
 # ControlNet with OpenPose is used to preserve pose and body structure

@@ -64,7 +64,7 @@ app = FastAPI(
 
 # Configure CORS to allow frontend to connect
 # Frontend: Create React App (react-scripts) running on port 3000 by default
-# Backend: FastAPI on port 8384 (maps to external 36580 on Vast.ai)
+# Backend: FastAPI on port 8384 (maps to external 48277 on Vast.ai)
 # Production: Frontend deployed on Vercel at https://ai-tryon-3ypg.vercel.app
 # Note: allow_credentials=False since no authentication/cookies are used
 origins = [
@@ -200,6 +200,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",  # Accept connections from any IP (required for remote access)
-        port=8384,        # Backend internal port (maps to external port 36580 on Vast.ai)
+        port=8384,        # Backend internal port (maps to external port 48277 on Vast.ai)
         reload=False      # Disable reload for production
     )
