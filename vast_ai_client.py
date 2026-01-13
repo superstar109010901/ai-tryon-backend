@@ -220,9 +220,11 @@ class VastAIClient:
                 "sampler_name": sampler_name,
                 "width": width,
                 "height": height,
-                "inpainting_fill": 1,
-                "inpaint_full_res": True,
-                "inpaint_full_res_padding": 32,
+                "inpainting_fill": 1,  # 1 = original (preserve original colors in masked area)
+                "inpaint_full_res": True,  # Full resolution inpainting
+                "inpaint_full_res_padding": 32,  # Padding for full res
+                "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
+                "mask_blur": 4,  # Slight blur for smoother edges
             }
             
             # Add ControlNet using alwayson_scripts format with exact structure

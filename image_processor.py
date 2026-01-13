@@ -106,32 +106,48 @@ class ImageProcessor:
             # Final verification: ensure mask has sufficient white pixels for shirt area
             final_white = np.sum(mask_array == 255)
             final_white_ratio = final_white / mask_array.size
-            if final_white_ratio < 0.10:
-                logger.warning(f"Mask white ratio ({final_white_ratio*100:.1f}%) is very low. Shirt might not change.")
-            elif final_white_ratio > 0.50:
-                logger.warning(f"Mask white ratio ({final_white_ratio*100:.1f}%) is very high. Background might change.")
-            else:
-                logger.info(f"Mask white ratio ({final_white_ratio*100:.1f}%) is good for shirt replacement.")
+            logger.info(f"=== MASK VERIFICATION ===")
+            logger.info(f"White pixels: {final_white} ({final_white_ratio*100:.2f}% of image)")
+            logger.info(f"Black pixels: {mask_array.size - final_white} ({(1-final_white_ratio)*100:.2f}% of image)")
+            logger.info(f"Face area (top {face_protection}px): {np.sum(mask_array[:face_protection, :] == 255)} white pixels (should be 0)")
             
-            # Generate image using Vast.ai img2img INPAINT API with inpainting + ControlNet
-            # Balance: Allow shirt changes while preserving person (face, pose, background)
+            if final_white_ratio < 0.10:
+                logger.warning(f"⚠️  Mask white ratio ({final_white_ratio*100:.1f}%) is very low. Shirt might not change.")
+                logger.warning(f"   Consider increasing mask size if shirt doesn't change.")
+            elif final_white_ratio > 0.50:
+                logger.warning(f"⚠️  Mask white ratio ({final_white_ratio*100:.1f}%) is very high. Background might change.")
+            else:
+                logger.info(f"✅ Mask white ratio ({final_white_ratio*100:.1f}%) is good for shirt replacement.")
+            
+            # Save mask for debugging (optional - can be removed in production)
+            try:
+                mask_debug_path = self.temp_dir / f"mask_debug_{uuid.uuid4().hex[:8]}.png"
+                mask.save(mask_debug_path)
+                logger.info(f"Mask saved for debugging: {mask_debug_path}")
+            except Exception as e:
+                logger.warning(f"Could not save debug mask: {e}")
+            
+            # Generate image using Vast.ai img2img INPAINT API with inpainting
+            # CRITICAL: ControlNet inpaint model can prevent changes - disable or use very low weight
+            # Use high denoising + strong prompt to force shirt change while mask protects face
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt="white cotton shirt, clean white fabric, natural shirt texture, realistic clothing, same person, same pose, same background",
-                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt",
-                denoising_strength=0.75,  # Balanced: enough to change shirt, not enough to change face
-                steps=25,
-                cfg_scale=5,
+                prompt="white cotton shirt, clean white fabric, white shirt, plain white shirt, natural fabric texture, realistic white clothing, professional white shirt",
+                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt, dark shirt, blue shirt, red shirt",
+                denoising_strength=0.85,  # High denoising to force changes in masked area
+                steps=30,  # More steps for better quality
+                cfg_scale=7,  # Higher CFG to make prompt more influential
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
-                # ControlNet configuration - balanced for person preservation + shirt change
-                controlnet_enabled=True,
+                # ControlNet disabled - it was preventing changes
+                # Mask alone should protect face, high denoising will change shirt
+                controlnet_enabled=False,  # DISABLED: ControlNet was preventing shirt changes
                 controlnet_model="controlnet-inpaint-dreamer-sdxl",
                 controlnet_module="none",
-                controlnet_weight=1.0,  # Balanced weight: preserve person but allow shirt change
-                controlnet_control_mode="Balanced",  # Balanced mode allows changes in masked area
+                controlnet_weight=0.0,
+                controlnet_control_mode="Balanced",
                 controlnet_pixel_perfect=True
             )
             
