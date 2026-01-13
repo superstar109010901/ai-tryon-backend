@@ -505,7 +505,7 @@ class ImageProcessor:
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
                 "same shirt style", "same clothing style", "same shirt type",
-                "white color", "white colored shirt", "white colored clothing",
+                "white color", "pure white clothing", "RGB(255,255,255)", "white colored shirt", "white colored clothing",
                 "change color to white", "white color only", "white colored fabric",
                 "same design white", "same style white", "white version of same shirt",
                 "white colored shirt", "white colored sleeves", "white fabric color"
