@@ -132,9 +132,9 @@ class ImageProcessor:
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt="white cotton shirt, white pants, white trousers, white clothes, clean white fabric, natural clothing texture, seamlessly integrated, natural clothing replacement, realistic white shirt and white pants, same person, same pose, same background, natural fabric folds, professional white shirt, white clothing",
-                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt, dark shirt, blue shirt, red shirt, dark pants, black pants, gray pants, jeans, colored pants, pasted, overlaid, digital overlay, sharp edges, visible seams",
-                denoising_strength=0.65,  # Balanced: enough to change shirt naturally, not too aggressive
+                prompt="white cotton shirt, white button-up shirt, white long-sleeved shirt, white pants, white trousers, white clothes, clean white fabric, natural clothing texture, seamlessly integrated, natural clothing replacement, realistic white shirt and white pants, same person, same pose, same background, natural fabric folds, professional white shirt, white clothing, white sleeves",
+                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt, dark shirt, blue shirt, red shirt, charcoal shirt, grey shirt, dark grey shirt, dark pants, black pants, gray pants, jeans, colored pants, pasted, overlaid, digital overlay, sharp edges, visible seams",
+                denoising_strength=0.75,  # Increased: need higher denoising to change dark grey shirt to white
                 steps=30,  # More steps for better quality and blending
                 cfg_scale=6,  # Balanced CFG for natural results
                 sampler_name="DPM++ SDE",
@@ -353,21 +353,21 @@ class ImageProcessor:
         face_neck_bottom = int(height * 0.40)
         
         # CLOTHING REGION: Cover ALL clothes (shirt + pants)
-        # Shirt region: from below neck to waist/hips
-        shirt_top = int(height * 0.38)  # Start below neck
-        shirt_bottom = int(height * 0.75)  # End at waist/hips (shirt extends down)
+        # Shirt region: from below neck to waist/hips - EXPANDED for full coverage
+        shirt_top = int(height * 0.35)  # Start lower to catch full shirt (was 0.38)
+        shirt_bottom = int(height * 0.78)  # Extend lower to cover full shirt including untucked part (was 0.75)
         
         # Pants/Trousers region: from waist to just above shoes
         pants_top = int(height * 0.70)  # Start at waist (overlaps with shirt bottom)
         pants_bottom = int(height * 0.92)  # End just above shoes/feet
         
-        # Chest/shirt area (center torso) - full width
-        chest_left = int(width * 0.12)  # Left edge of shirt
-        chest_right = int(width * 0.88)  # Right edge of shirt
+        # Chest/shirt area (center torso) - EXPANDED width for full shirt coverage
+        chest_left = int(width * 0.08)  # Left edge of shirt (wider - was 0.12)
+        chest_right = int(width * 0.92)  # Right edge of shirt (wider - was 0.88)
         
-        # Upper arms and shoulders (wider than chest)
-        shoulder_left = int(width * 0.05)  # Left shoulder/arm
-        shoulder_right = int(width * 0.95)  # Right shoulder/arm
+        # Full arms and shoulders - cover ENTIRE sleeves including rolled-up parts
+        shoulder_left = int(width * 0.02)  # Left shoulder/arm (wider - was 0.05)
+        shoulder_right = int(width * 0.98)  # Right shoulder/arm (wider - was 0.95)
         
         # Pants width (narrower than shirt, centered)
         pants_left = int(width * 0.20)  # Left edge of pants
@@ -376,27 +376,29 @@ class ImageProcessor:
         # Draw clothing regions: shirt + pants
         draw = ImageDraw.Draw(mask)
         
-        # ===== SHIRT REGION =====
+        # ===== SHIRT REGION - FULL COVERAGE =====
         # Main torso/chest rectangle (WHITE = change this area)
+        # Make it wider and taller to ensure full shirt coverage
         draw.rectangle(
             [(chest_left, shirt_top), (chest_right, shirt_bottom)],
-            fill=255  # White = SD can change this area (full shirt)
+            fill=255  # White = SD can change this area (FULL shirt including lower part)
         )
         
-        # Left upper arm and shoulder (WHITE = change this area)
+        # Left arm and shoulder - FULL sleeve coverage (including rolled-up sleeves)
+        # Extend arms to cover entire sleeve area from shoulder to elbow and below
         left_arm_top = shirt_top
-        left_arm_bottom = int(height * 0.70)  # Arm extends to mid-torso
+        left_arm_bottom = int(height * 0.75)  # Arm extends further down to cover rolled sleeves (was 0.70)
         draw.rectangle(
             [(shoulder_left, left_arm_top), (chest_left, left_arm_bottom)],
-            fill=255  # White = upper arm/shoulder area (shirt sleeve)
+            fill=255  # White = FULL arm/shoulder area (entire shirt sleeve)
         )
         
-        # Right upper arm and shoulder (WHITE = change this area)
+        # Right arm and shoulder - FULL sleeve coverage (including rolled-up sleeves)
         right_arm_top = shirt_top
-        right_arm_bottom = int(height * 0.70)  # Arm extends to mid-torso
+        right_arm_bottom = int(height * 0.75)  # Arm extends further down to cover rolled sleeves (was 0.70)
         draw.rectangle(
             [(chest_right, right_arm_top), (shoulder_right, right_arm_bottom)],
-            fill=255  # White = upper arm/shoulder area (shirt sleeve)
+            fill=255  # White = FULL arm/shoulder area (entire shirt sleeve)
         )
         
         # ===== PANTS/TROUSERS REGION =====
@@ -407,10 +409,26 @@ class ImageProcessor:
         )
         
         # CRITICAL: Force face/neck area to be COMPLETELY BLACK
+        # This MUST be done AFTER drawing shirt/pants to ensure face protection
         # This is the most important step - even a few white pixels will change the face
         draw.rectangle(
             [(0, 0), (width, face_neck_bottom)],
             fill=0  # Black = preserve face and neck (DO NOT CHANGE)
+        )
+        
+        # Re-draw shirt area AFTER face protection to ensure shirt mask is not lost
+        # This ensures shirt area (below face) remains white
+        draw.rectangle(
+            [(chest_left, shirt_top), (chest_right, shirt_bottom)],
+            fill=255  # White = SD can change this area (FULL shirt)
+        )
+        draw.rectangle(
+            [(shoulder_left, left_arm_top), (chest_left, left_arm_bottom)],
+            fill=255  # White = FULL arm/shoulder area
+        )
+        draw.rectangle(
+            [(chest_right, right_arm_top), (shoulder_right, right_arm_bottom)],
+            fill=255  # White = FULL arm/shoulder area
         )
         
         # Ensure bottom area (shoes, feet, background) is black
