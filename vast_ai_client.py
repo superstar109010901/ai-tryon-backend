@@ -130,6 +130,40 @@ class VastAIClient:
             logger.error(f"Error in face detection: {e}")
             return None
     
+    async def detect_person_and_clothing(self, image: Image.Image) -> Dict[str, Optional[Image.Image]]:
+        """
+        Detect full person and clothing regions using ControlNet segmentation.
+        Returns face detection and segmentation map for clothing detection.
+        
+        Args:
+            image: Input PIL Image
+        
+        Returns:
+            Dictionary with 'face' and 'segmentation' keys, values are PIL Images or None
+        """
+        result = {
+            'face': None,
+            'segmentation': None
+        }
+        
+        # Detect face for protection
+        try:
+            result['face'] = await self.detect_face_area(image)
+            if result['face'] is not None:
+                logger.info("✅ Face detection successful")
+        except Exception as e:
+            logger.warning(f"Face detection error: {e}")
+        
+        # Detect full person and clothing using segmentation
+        try:
+            result['segmentation'] = await self.get_segmentation_map(image)
+            if result['segmentation'] is not None:
+                logger.info("✅ Person/body segmentation successful")
+        except Exception as e:
+            logger.warning(f"Segmentation error: {e}")
+        
+        return result
+    
     async def get_segmentation_map(self, image: Image.Image) -> Image.Image:
         """
         Get segmentation map from ControlNet segmentation preprocessor.

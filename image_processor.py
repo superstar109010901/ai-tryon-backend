@@ -80,21 +80,34 @@ class ImageProcessor:
                 logger.info(f"Resized image to {image.size}")
             
             # Generate mask for inpainting
-            # Step 1: Detect face using ControlNet for precise face protection
-            logger.info("Detecting face area using ControlNet...")
-            face_detection = None
-            try:
-                face_detection = await self.vast_ai_client.detect_face_area(image)
-                if face_detection is not None:
-                    logger.info("✅ Face detection successful - using detected face area for protection")
-                else:
-                    logger.warning("⚠️  Face detection failed - will use fallback protection")
-            except Exception as e:
-                logger.warning(f"Face detection error: {e} - will use fallback protection")
+            # Step 1: Detect full person and clothing using ControlNet
+            logger.info("Detecting person and clothing using ControlNet...")
+            detections = await self.vast_ai_client.detect_person_and_clothing(image)
+            face_detection = detections.get('face')
+            segmentation_map = detections.get('segmentation')
             
-            # Step 2: Generate clothing mask (shirt + pants)
-            logger.info("Generating clothing mask (shirt + pants)...")
-            mask = self.generate_clothing_mask(image, face_detection)
+            if face_detection is not None:
+                logger.info("✅ Face detection successful - using detected face area for protection")
+            else:
+                logger.warning("⚠️  Face detection failed - will use fallback protection")
+            
+            if segmentation_map is not None:
+                logger.info("✅ Person/body segmentation successful - detecting clothing regions")
+            else:
+                logger.warning("⚠️  Segmentation failed - will use geometric mask")
+            
+            # Step 2: Generate clothing mask based on detected clothing
+            # Only mask clothing that actually exists in the image
+            logger.info("Generating clothing mask from detected clothing...")
+            mask, clothing_items = self.generate_clothing_mask_from_segmentation(
+                image, 
+                face_detection, 
+                segmentation_map
+            )
+            
+            # Step 3: Update prompt based on detected clothing
+            # Only mention clothing that exists (e.g., if no pants, don't mention pants)
+            prompt, negative_prompt = self.build_prompt_from_clothing(clothing_items)
             
             # Verify mask is correct: should have white pixels in clothing region only
             mask_array = np.array(mask)
@@ -137,8 +150,8 @@ class ImageProcessor:
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt="white cotton shirt, white button-up shirt, white long-sleeved shirt, white pants, white trousers, white clothes, clean white fabric, natural clothing texture, seamlessly integrated, natural clothing replacement, realistic white shirt and white pants, same person, same pose, same background, natural fabric folds, professional white shirt, white clothing, white sleeves",
-                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation, gray shirt, black shirt, colored shirt, dark shirt, blue shirt, red shirt, charcoal shirt, grey shirt, dark grey shirt, dark pants, black pants, gray pants, jeans, colored pants, pasted, overlaid, digital overlay, sharp edges, visible seams",
+                prompt=prompt,
+                negative_prompt=negative_prompt,
                 denoising_strength=0.75,  # Increased: need higher denoising to change dark grey shirt to white
                 steps=30,  # More steps for better quality and blending
                 cfg_scale=6,  # Balanced CFG for natural results
@@ -383,6 +396,267 @@ class ImageProcessor:
         logger.info(f"Face mask created: {np.sum(face_mask_array == 255)} white pixels ({np.sum(face_mask_array == 255)/face_mask_array.size*100:.1f}% of image)")
         
         return Image.fromarray(face_mask_array, mode='L')
+    
+    def detect_clothing_from_segmentation(self, segmentation_map: Image.Image, original_image: Image.Image) -> Dict[str, bool]:
+        """
+        Detect what clothing items exist in the image from segmentation map.
+        
+        Args:
+            segmentation_map: Segmentation map from ControlNet
+            original_image: Original input image
+        
+        Returns:
+            Dictionary with clothing items and whether they exist:
+            {'has_shirt': bool, 'has_pants': bool, 'has_dress': bool}
+        """
+        width, height = original_image.size
+        segmentation = segmentation_map.resize((width, height), Image.Resampling.LANCZOS)
+        seg_array = np.array(segmentation)
+        
+        # Convert to HSV for better color detection
+        if len(seg_array.shape) == 3:
+            seg_hsv = Image.fromarray(seg_array).convert('HSV')
+            hsv_array = np.array(seg_hsv)
+            h, s, v = hsv_array[:, :, 0], hsv_array[:, :, 1], hsv_array[:, :, 2]
+        else:
+            h, s, v = seg_array, seg_array, seg_array
+        
+        # Detect clothing regions based on segmentation colors
+        # Segmentation typically uses specific colors for different body parts:
+        # - Shirt/torso: Usually red/pink/magenta tones
+        # - Pants/legs: Usually blue/cyan tones
+        # - Face/head: Usually yellow/orange tones
+        
+        # Shirt detection: look for red/pink/magenta in middle-upper region (torso)
+        torso_region = seg_array[int(height*0.2):int(height*0.7), :]
+        if len(torso_region.shape) == 3:
+            torso_hsv = Image.fromarray(torso_region).convert('HSV')
+            torso_h = np.array(torso_hsv)[:, :, 0]
+        else:
+            torso_h = torso_region
+        
+        # Red/pink/magenta tones (H: 0-20 or 160-180)
+        shirt_pixels = np.sum(((torso_h >= 0) & (torso_h <= 20)) | ((torso_h >= 160) & (torso_h <= 180)))
+        has_shirt = shirt_pixels > (torso_region.size * 0.1)  # At least 10% of torso region
+        
+        # Pants detection: look for blue/cyan in lower region (legs)
+        legs_region = seg_array[int(height*0.6):int(height*0.95), :]
+        if len(legs_region.shape) == 3:
+            legs_hsv = Image.fromarray(legs_region).convert('HSV')
+            legs_h = np.array(legs_hsv)[:, :, 0]
+        else:
+            legs_h = legs_region
+        
+        # Blue/cyan tones (H: 100-130)
+        pants_pixels = np.sum((legs_h >= 100) & (legs_h <= 130))
+        has_pants = pants_pixels > (legs_region.size * 0.1)  # At least 10% of legs region
+        
+        # Also check RGB directly for common segmentation colors
+        if len(seg_array.shape) == 3:
+            r, g, b = seg_array[:, :, 0], seg_array[:, :, 1], seg_array[:, :, 2]
+            # Shirt: high red, medium green/blue
+            shirt_rgb = np.sum((r > 150) & (r > g) & (r > b))
+            if shirt_rgb > (seg_array.shape[0] * seg_array.shape[1] * 0.05):
+                has_shirt = True
+            # Pants: high blue, medium red/green
+            pants_rgb = np.sum((b > 150) & (b > r) & (b > g))
+            if pants_rgb > (seg_array.shape[0] * seg_array.shape[1] * 0.05):
+                has_pants = True
+        
+        logger.info(f"Clothing detection: has_shirt={has_shirt}, has_pants={has_pants}")
+        
+        return {
+            'has_shirt': has_shirt,
+            'has_pants': has_pants,
+            'has_dress': False  # Can be extended later
+        }
+    
+    def build_prompt_from_clothing(self, clothing_items: Dict[str, bool]) -> Tuple[str, str]:
+        """
+        Build prompt based on detected clothing items.
+        Only mention clothing that exists.
+        
+        Args:
+            clothing_items: Dictionary with clothing detection results
+        
+        Returns:
+            Tuple of (prompt, negative_prompt)
+        """
+        prompt_parts = []
+        negative_parts = [
+            "different person", "new person", "face change", "face modification", 
+            "altered face", "different face", "mannequin", "product photo", 
+            "studio shot", "floating clothes", "flat lay", "folded shirt", 
+            "catalog image", "jacket", "hoodie", "coat", "logo", "pattern", 
+            "distorted face", "face deformation", "pasted", "overlaid", 
+            "digital overlay", "sharp edges", "visible seams"
+        ]
+        
+        # Add clothing-specific prompts based on what exists
+        if clothing_items.get('has_shirt', True):  # Default to True if not detected
+            prompt_parts.extend([
+                "white cotton shirt", "white button-up shirt", 
+                "white long-sleeved shirt", "white shirt", 
+                "clean white fabric", "white sleeves"
+            ])
+            negative_parts.extend([
+                "gray shirt", "black shirt", "colored shirt", 
+                "dark shirt", "blue shirt", "red shirt", 
+                "charcoal shirt", "grey shirt", "dark grey shirt"
+            ])
+        
+        if clothing_items.get('has_pants', False):  # Only if pants detected
+            prompt_parts.extend([
+                "white pants", "white trousers", "white clothing"
+            ])
+            negative_parts.extend([
+                "dark pants", "black pants", "gray pants", 
+                "jeans", "colored pants"
+            ])
+        
+        # Common parts
+        prompt_parts.extend([
+            "natural clothing texture", "seamlessly integrated", 
+            "natural clothing replacement", "realistic white clothing",
+            "same person", "same pose", "same background", 
+            "natural fabric folds", "professional white clothing"
+        ])
+        
+        prompt = ", ".join(prompt_parts)
+        negative_prompt = ", ".join(negative_parts)
+        
+        logger.info(f"Generated prompt: {prompt[:100]}...")
+        logger.info(f"Clothing items in prompt: shirt={clothing_items.get('has_shirt')}, pants={clothing_items.get('has_pants')}")
+        
+        return prompt, negative_prompt
+    
+    def generate_clothing_mask_from_segmentation(
+        self, 
+        image: Image.Image, 
+        face_detection: Optional[Image.Image] = None,
+        segmentation_map: Optional[Image.Image] = None
+    ) -> Tuple[Image.Image, Dict[str, bool]]:
+        """
+        Generate clothing mask based on detected clothing from segmentation.
+        Only masks clothing that actually exists in the image.
+        
+        Args:
+            image: Input PIL Image
+            face_detection: Face detection map from ControlNet (optional)
+            segmentation_map: Segmentation map from ControlNet (optional)
+        
+        Returns:
+            Tuple of (mask Image, clothing_items dict)
+        """
+        from PIL import ImageDraw
+        
+        width, height = image.size
+        
+        # Detect what clothing exists
+        clothing_items = {'has_shirt': True, 'has_pants': False, 'has_dress': False}
+        if segmentation_map is not None:
+            try:
+                clothing_items = self.detect_clothing_from_segmentation(segmentation_map, image)
+            except Exception as e:
+                logger.warning(f"Clothing detection from segmentation failed: {e}, using defaults")
+        
+        # Create mask: start with ALL BLACK (preserve everything)
+        mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
+        
+        # Create face protection mask
+        face_mask = None
+        if face_detection is not None:
+            try:
+                face_mask = self.create_face_mask_from_detection(face_detection, image)
+                logger.info("Using ControlNet face detection for face protection")
+            except Exception as e:
+                logger.warning(f"Failed to create face mask: {e}, using fallback")
+                face_mask = None
+        
+        face_protection_fallback = int(height * 0.20) if face_mask is None else None
+        
+        draw = ImageDraw.Draw(mask)
+        
+        # Only mask clothing that exists
+        if clothing_items.get('has_shirt', True):
+            # Shirt region
+            shirt_top = int(height * 0.15)
+            shirt_bottom = int(height * 0.78)
+            chest_left = int(width * 0.08)
+            chest_right = int(width * 0.92)
+            shoulder_left = int(width * 0.02)
+            shoulder_right = int(width * 0.98)
+            
+            # Main torso/chest
+            draw.rectangle(
+                [(chest_left, shirt_top), (chest_right, shirt_bottom)],
+                fill=255  # White = change shirt
+            )
+            
+            # Arms
+            left_arm_bottom = int(height * 0.75)
+            draw.rectangle(
+                [(shoulder_left, shirt_top), (chest_left, left_arm_bottom)],
+                fill=255  # White = change sleeves
+            )
+            draw.rectangle(
+                [(chest_right, shirt_top), (shoulder_right, left_arm_bottom)],
+                fill=255  # White = change sleeves
+            )
+            logger.info("Masked shirt area")
+        
+        if clothing_items.get('has_pants', False):
+            # Pants region - only if pants detected
+            pants_top = int(height * 0.70)
+            pants_bottom = int(height * 0.92)
+            pants_left = int(width * 0.20)
+            pants_right = int(width * 0.80)
+            
+            draw.rectangle(
+                [(pants_left, pants_top), (pants_right, pants_bottom)],
+                fill=255  # White = change pants
+            )
+            logger.info("Masked pants area")
+        else:
+            logger.info("No pants detected - skipping pants mask")
+        
+        # Apply face protection
+        if face_mask is not None:
+            mask_array = np.array(mask)
+            face_mask_array = np.array(face_mask)
+            mask_array[face_mask_array > 127] = 0
+            mask = Image.fromarray(mask_array, mode='L')
+            logger.info("Applied ControlNet face detection mask")
+        else:
+            draw.rectangle(
+                [(0, 0), (width, face_protection_fallback)],
+                fill=0  # Black = preserve face
+            )
+            logger.info(f"Using fallback face protection (top {face_protection_fallback*100/height:.1f}%)")
+        
+        # Re-draw clothing after face protection
+        draw = ImageDraw.Draw(mask)
+        if clothing_items.get('has_shirt', True):
+            draw.rectangle([(chest_left, shirt_top), (chest_right, shirt_bottom)], fill=255)
+            draw.rectangle([(shoulder_left, shirt_top), (chest_left, left_arm_bottom)], fill=255)
+            draw.rectangle([(chest_right, shirt_top), (shoulder_right, left_arm_bottom)], fill=255)
+        
+        if clothing_items.get('has_pants', False):
+            draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
+        
+        # Re-apply face protection
+        if face_mask is not None:
+            mask_array = np.array(mask)
+            face_mask_array = np.array(face_mask)
+            mask_array[face_mask_array > 127] = 0
+            mask = Image.fromarray(mask_array, mode='L')
+        
+        # Final cleanup
+        mask_array = np.array(mask)
+        mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
+        mask = Image.fromarray(mask_array, mode='L')
+        
+        return mask, clothing_items
     
     def generate_clothing_mask(self, image: Image.Image, face_detection: Optional[Image.Image] = None) -> Image.Image:
         """
