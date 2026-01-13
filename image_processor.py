@@ -79,27 +79,37 @@ class ImageProcessor:
                 image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 logger.info(f"Resized image to {image.size}")
             
-            # Generate mask using ControlNet segmentation
-            # Step 1: Get segmentation map from ControlNet (detects body parts)
-            logger.info("Getting segmentation map from ControlNet...")
-            try:
-                segmentation_map = await self.vast_ai_client.get_segmentation_map(image)
-                
-                # Step 2: Create mask from segmentation (clothing = white, everything else = black)
-                logger.info("Creating mask from segmentation map...")
-                mask = self.create_mask_from_segmentation(segmentation_map, image)
-            except Exception as e:
-                logger.warning(f"Segmentation failed: {e}. Falling back to rectangle mask.")
-                # Fallback to rectangle mask if segmentation fails
-                mask = self.generate_clothing_mask(image)
+            # Generate mask for inpainting
+            # CRITICAL: Use reliable geometric mask instead of segmentation
+            # Segmentation can misdetect face as clothing or vice versa
+            # Geometric mask ensures: White = shirt area (torso), Black = everything else (face, neck, background)
+            logger.info("Generating precise torso mask (chest, upper arms, shoulders)...")
+            mask = self.generate_clothing_mask(image)
+            
+            # Verify mask is correct: should have white pixels in torso region only
+            mask_array = np.array(mask)
+            white_pixels = np.sum(mask_array == 255)
+            total_pixels = mask_array.size
+            white_ratio = white_pixels / total_pixels
+            logger.info(f"Mask verification: {white_pixels} white pixels ({white_ratio*100:.1f}% of image)")
+            
+            if white_ratio < 0.05 or white_ratio > 0.40:
+                logger.warning(f"Mask white ratio ({white_ratio*100:.1f}%) seems unusual. Expected 10-30% for torso region.")
+            
+            # Ensure top 45% is completely black (face/neck protection)
+            height = mask_array.shape[0]
+            face_protection = int(height * 0.45)
+            mask_array[:face_protection, :] = 0
+            mask = Image.fromarray(mask_array, mode='L')
+            logger.info(f"Face/neck area (top {face_protection}px) forced to black")
             
             # Generate image using Vast.ai img2img INPAINT API with inpainting + ControlNet
             # Using exact payload structure: low denoise (0.4) + inpainting params + tightened ControlNet
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt="a realistic photo of the same man, wearing a plain white cotton shirt, same pose, same face, same background, same lighting, natural fabric folds, clean white shirt",
-                negative_prompt="different person, new person, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern",
+                prompt="plain white cotton shirt, clean fabric, natural fabric folds, realistic clothing texture",
+                negative_prompt="different person, new person, face change, face modification, altered face, different face, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern, distorted face, face deformation",
                 denoising_strength=0.4,  # Low denoise: freeze everything except torso
                 steps=25,
                 cfg_scale=5,
@@ -289,13 +299,14 @@ class ImageProcessor:
         """
         Generate a precise mask for inpainting where only torso region can be changed.
         
-        Mask requirements:
-        - White (255) = shirt area: Chest, Upper arms, Shoulder fabric
-        - Black (0) = everything else: Face, Neck, Background, Table
+        CRITICAL MASK RULES:
+        - White (255) = shirt area ONLY: Chest, Upper arms, Shoulder fabric
+        - Black (0) = everything else: Face, Neck, Background, Table, Hands
         
         If mask is:
         - Too large → background changes
         - Too small → shirt floats/disappears
+        - White on face → FACE CHANGES (THIS IS THE BUG!)
         - Missing → model ignores person entirely
         
         Args:
@@ -308,67 +319,64 @@ class ImageProcessor:
         
         width, height = image.size
         
-        # Create mask: start with all black (preserve everything)
+        # Create mask: start with ALL BLACK (preserve everything)
+        # This is critical - we only mark shirt area as white
         mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
         
-        # Define precise torso region (chest, upper arms, shoulder fabric)
-        # Exclude: Face, Neck, Background, Table
-        
-        # Face and neck protection zone (top 40% - keep black)
-        # This ensures face and neck are NEVER touched
-        face_neck_bottom = int(height * 0.40)
+        # CRITICAL: Face and neck protection zone (top 45% - MUST be black)
+        # Even ONE white pixel in face area will cause face changes
+        face_neck_bottom = int(height * 0.45)
         
         # Torso region (chest, upper arms, shoulders)
-        # Start below neck, end before lower body
-        torso_top = int(height * 0.40)  # Start below neck
-        torso_bottom = int(height * 0.75)  # End before lower body/waist
+        # Start BELOW neck, end before lower body
+        torso_top = int(height * 0.45)  # Start below neck (safe zone)
+        torso_bottom = int(height * 0.80)  # End before lower body/waist
         
-        # Chest area (center)
-        chest_left = int(width * 0.20)  # Left edge of chest
-        chest_right = int(width * 0.80)  # Right edge of chest
+        # Chest area (center torso)
+        chest_left = int(width * 0.18)  # Left edge of chest
+        chest_right = int(width * 0.82)  # Right edge of chest
         
         # Upper arms and shoulders (wider than chest)
-        # Shoulders extend beyond chest
-        shoulder_left = int(width * 0.10)  # Left shoulder/arm
-        shoulder_right = int(width * 0.90)  # Right shoulder/arm
+        # Shoulders extend beyond chest but stay within person bounds
+        shoulder_left = int(width * 0.08)  # Left shoulder/arm
+        shoulder_right = int(width * 0.92)  # Right shoulder/arm
         
         # Draw torso region: chest + upper arms + shoulders
         draw = ImageDraw.Draw(mask)
         
-        # Main torso/chest rectangle
+        # Main torso/chest rectangle (WHITE = change this area)
         draw.rectangle(
             [(chest_left, torso_top), (chest_right, torso_bottom)],
-            fill=255  # White = SD can change this area
+            fill=255  # White = SD can change this area (shirt only)
         )
         
-        # Left upper arm and shoulder
-        # Extends from shoulder to mid-torso
+        # Left upper arm and shoulder (WHITE = change this area)
         left_arm_top = torso_top
-        left_arm_bottom = int(height * 0.60)  # Upper arm ends mid-torso
+        left_arm_bottom = int(height * 0.65)  # Upper arm ends mid-torso
         draw.rectangle(
             [(shoulder_left, left_arm_top), (chest_left, left_arm_bottom)],
-            fill=255  # White = upper arm/shoulder area
+            fill=255  # White = upper arm/shoulder area (shirt sleeve)
         )
         
-        # Right upper arm and shoulder
+        # Right upper arm and shoulder (WHITE = change this area)
         right_arm_top = torso_top
-        right_arm_bottom = int(height * 0.60)  # Upper arm ends mid-torso
+        right_arm_bottom = int(height * 0.65)  # Upper arm ends mid-torso
         draw.rectangle(
             [(chest_right, right_arm_top), (shoulder_right, right_arm_bottom)],
-            fill=255  # White = upper arm/shoulder area
+            fill=255  # White = upper arm/shoulder area (shirt sleeve)
         )
         
-        # Ensure face/neck area is completely black (no white pixels)
-        # This is critical - even a few white pixels will cause face changes
+        # CRITICAL: Force face/neck area to be COMPLETELY BLACK
+        # This is the most important step - even a few white pixels will change the face
         draw.rectangle(
             [(0, 0), (width, face_neck_bottom)],
-            fill=0  # Black = preserve face and neck
+            fill=0  # Black = preserve face and neck (DO NOT CHANGE)
         )
         
-        # Ensure bottom area (table, background) is black
+        # Ensure bottom area (table, background, hands) is black
         draw.rectangle(
             [(0, torso_bottom), (width, height)],
-            fill=0  # Black = preserve background/table
+            fill=0  # Black = preserve background/table/hands
         )
         
         # Ensure side margins (background) are black
@@ -385,15 +393,26 @@ class ImageProcessor:
         # This ensures strict mask: white = change, black = preserve
         mask_array = np.array(mask)
         mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
-        mask = Image.fromarray(mask_array, mode='L')
         
-        # Log mask statistics
+        # TRIPLE-CHECK: Force face area to be black (even if somehow white pixels got in)
+        mask_array[:face_neck_bottom, :] = 0
+        
+        # Verify mask correctness
         white_pixels = np.sum(mask_array == 255)
+        face_area_pixels = np.sum(mask_array[:face_neck_bottom, :] == 255)
         total_pixels = mask_array.size
-        logger.info(f"Generated precise torso mask: {white_pixels} white pixels ({white_pixels/total_pixels*100:.1f}%)")
-        logger.info(f"Mask includes: Chest, Upper arms, Shoulder fabric")
-        logger.info(f"Mask excludes: Face (top {face_neck_bottom}px), Neck, Background, Table")
         
+        if face_area_pixels > 0:
+            logger.error(f"CRITICAL ERROR: {face_area_pixels} white pixels found in face area! Forcing to black...")
+            mask_array[:face_neck_bottom, :] = 0
+        
+        logger.info(f"Generated precise torso mask:")
+        logger.info(f"  - White pixels (shirt area): {white_pixels} ({white_pixels/total_pixels*100:.1f}%)")
+        logger.info(f"  - Face area white pixels: {np.sum(mask_array[:face_neck_bottom, :] == 255)} (should be 0)")
+        logger.info(f"  - Mask includes: Chest, Upper arms, Shoulder fabric")
+        logger.info(f"  - Mask excludes: Face (top {face_neck_bottom}px), Neck, Background, Table")
+        
+        mask = Image.fromarray(mask_array, mode='L')
         return mask
     
     def cleanup_old_files(self, keep_count: int = 10):
