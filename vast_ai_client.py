@@ -332,7 +332,7 @@ class VastAIClient:
                 "inpaint_full_res": False,  # False = better blending, True = can create artifacts
                 "inpaint_full_res_padding": 0,  # Not needed when inpaint_full_res is False
                 "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
-                "mask_blur": 8,  # Higher blur (8-12) for smoother, more natural edges
+                "mask_blur": 16,  # Higher blur (16-20) for very smooth edges, prevents visible rectangle overlay
             }
             
             # Add ControlNet using controlnet_units format with TWO units:

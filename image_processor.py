@@ -511,7 +511,10 @@ class ImageProcessor:
                 "charcoal shirt", "grey shirt", "dark grey shirt",
                 "hidden shirt", "obscured shirt", "covered shirt",
                 "translucent object", "semi-transparent", "foggy",
-                "blurred clothing", "unclear shirt", "invisible shirt"
+                "blurred clothing", "unclear shirt", "invisible shirt",
+                "rectangle overlay", "square overlay", "rectangular overlay",
+                "visible mask", "mask edges", "overlay artifact", "red outline",
+                "yellow overlay", "brown overlay", "semi-transparent rectangle"
             ])
         
         if clothing_items.get('has_pants', False):  # Only if pants detected
@@ -662,10 +665,28 @@ class ImageProcessor:
             mask_array[face_mask_array > 127] = 0
             mask = Image.fromarray(mask_array, mode='L')
         
-        # Final cleanup
+        # Final cleanup with smooth edges to prevent visible rectangle overlay
         mask_array = np.array(mask)
         mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
+        
+        # Apply Gaussian blur to mask edges for seamless blending
+        # This prevents the visible rectangle/square overlay artifact
+        mask_pil = Image.fromarray(mask_array, mode='L')
+        mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=4))  # Smooth edges
+        
+        # Re-threshold after blur to maintain mostly black/white but with smooth transitions
+        mask_array = np.array(mask_pil)
+        mask_array = np.where(mask_array > 50, 255, 0).astype(np.uint8)  # Lower threshold for smoother edges
+        
+        # Re-apply face protection after blur
+        if face_mask is not None:
+            face_mask_array = np.array(face_mask)
+            mask_array[face_mask_array > 127] = 0
+        else:
+            mask_array[:face_protection_fallback, :] = 0
+        
         mask = Image.fromarray(mask_array, mode='L')
+        logger.info("Applied Gaussian blur to mask edges to prevent visible overlay artifacts")
         
         return mask, clothing_items
     
