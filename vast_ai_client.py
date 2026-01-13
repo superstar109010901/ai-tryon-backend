@@ -328,11 +328,11 @@ class VastAIClient:
                 "sampler_name": sampler_name,
                 "width": width,
                 "height": height,
-                "inpainting_fill": 1,  # 1 = original (preserves person better, prevents blurred overlay)
-                "inpaint_full_res": True,  # True = better quality, prevents blurred rectangle artifacts
+                "inpainting_fill": 0,  # 0 = latent noise (allows changes), 1 = original (too conservative)
+                "inpaint_full_res": False,  # False = better blending and allows changes, True = can prevent changes
                 "inpaint_full_res_padding": 32,  # Padding for better blending
                 "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
-                "mask_blur": 4,  # Lower blur (4-8) prevents visible blurred rectangle overlay
+                "mask_blur": 8,  # Moderate blur (8) for smooth edges without overlay artifacts
             }
             
             # Add ControlNet using controlnet_units format with TWO units:

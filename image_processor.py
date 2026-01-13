@@ -152,7 +152,7 @@ class ImageProcessor:
                 mask=mask,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                denoising_strength=0.35,  # Balanced denoising (0.30-0.35): ensures shirt changes while preserving face
+                denoising_strength=0.55,  # Higher denoising (0.55): ensures clothing changes while preserving face with ControlNet
                 steps=30,  # More steps for better quality and blending
                 cfg_scale=6,  # Balanced CFG for natural results
                 sampler_name="DPM++ SDE",
@@ -164,10 +164,10 @@ class ImageProcessor:
                 controlnet_pose_model="controlnet-openpose-sdxl",  # OpenPose model
                 controlnet_pose_weight=1.0,  # Weight 1.0 for strong pose preservation
                 controlnet_pose_control_mode="ControlNet is more important",  # Strong control to preserve person
-                # ControlNet Unit 1: Inpaint guidance (DISABLED - was causing blurred rectangle overlay)
-                controlnet_inpaint_enabled=False,  # DISABLED: Inpaint ControlNet was creating blurred overlay artifacts
-                controlnet_inpaint_model="controlnet-inpaint-sdxl",
-                controlnet_inpaint_weight=0.0,  # Disabled
+                # ControlNet Unit 1: Inpaint guidance (re-enabled with lower weight to allow changes)
+                controlnet_inpaint_enabled=True,  # Re-enabled: helps with clothing replacement
+                controlnet_inpaint_model="controlnet-inpaint-sdxl",  # Inpaint model for guidance
+                controlnet_inpaint_weight=0.5,  # Lower weight (0.5) to allow changes while preventing overlay
                 controlnet_pixel_perfect=True  # Pixel perfect mode
             )
             
@@ -503,7 +503,9 @@ class ImageProcessor:
                 "clean white fabric", "white sleeves",
                 "visible white shirt", "clear white shirt", 
                 "fully visible white clothing", "white shirt clearly visible",
-                "white shirt not hidden", "white shirt unobstructed"
+                "white shirt not hidden", "white shirt unobstructed",
+                "replace shirt with white shirt", "change shirt to white",
+                "white shirt replacement", "white shirt only"
             ])
             negative_parts.extend([
                 "gray shirt", "black shirt", "colored shirt", 
@@ -671,18 +673,17 @@ class ImageProcessor:
             mask_array[face_mask_array > 127] = 0
             mask = Image.fromarray(mask_array, mode='L')
         
-        # Final cleanup - precise mask without excessive blur to prevent blurred rectangle overlay
+        # Final cleanup - balanced mask with moderate blur for smooth edges
         mask_array = np.array(mask)
         mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
         
-        # Apply minimal edge smoothing (very light blur) to prevent hard edges
-        # But NOT too much blur - that creates the blurred rectangle overlay artifact
+        # Apply moderate edge smoothing to prevent hard edges and overlay artifacts
         mask_pil = Image.fromarray(mask_array, mode='L')
-        mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=1))  # Minimal blur (was 4, too much)
+        mask_pil = mask_pil.filter(ImageFilter.GaussianBlur(radius=2))  # Moderate blur (radius=2) for smooth edges
         
-        # Re-threshold after minimal blur - keep it mostly sharp
+        # Re-threshold after blur - balanced threshold for smooth transitions
         mask_array = np.array(mask_pil)
-        mask_array = np.where(mask_array > 200, 255, 0).astype(np.uint8)  # Higher threshold (was 50) for sharper edges
+        mask_array = np.where(mask_array > 100, 255, 0).astype(np.uint8)  # Balanced threshold for smooth edges
         
         # Re-apply face protection
         if face_mask is not None:
