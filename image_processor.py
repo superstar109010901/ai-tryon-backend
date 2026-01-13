@@ -152,7 +152,7 @@ class ImageProcessor:
                 mask=mask,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                denoising_strength=0.55,  # Higher denoising (0.55): ensures clothing changes while preserving face with ControlNet
+                denoising_strength=0.45,  # Moderate denoising (0.45): changes color while preserving clothing style and details
                 steps=30,  # More steps for better quality and blending
                 cfg_scale=6,  # Balanced CFG for natural results
                 sampler_name="DPM++ SDE",
@@ -496,16 +496,14 @@ class ImageProcessor:
         ]
         
         # Add clothing-specific prompts based on what exists
+        # Focus on COLOR CHANGE ONLY - keep same clothing style
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
-                "white cotton shirt", "white button-up shirt", 
-                "white long-sleeved shirt", "white shirt", 
-                "clean white fabric", "white sleeves",
-                "visible white shirt", "clear white shirt", 
-                "fully visible white clothing", "white shirt clearly visible",
-                "white shirt not hidden", "white shirt unobstructed",
-                "replace shirt with white shirt", "change shirt to white",
-                "white shirt replacement", "white shirt only"
+                "same shirt style", "same clothing style", "same shirt type",
+                "white color", "white colored shirt", "white colored clothing",
+                "change color to white", "white color only", "white colored fabric",
+                "same design white", "same style white", "white version of same shirt",
+                "white colored shirt", "white colored sleeves", "white fabric color"
             ])
             negative_parts.extend([
                 "gray shirt", "black shirt", "colored shirt", 
@@ -520,28 +518,32 @@ class ImageProcessor:
                 "blurred rectangle", "blurred square", "blurred overlay",
                 "semi-transparent overlay", "blurred area", "obscured person",
                 "hidden person", "blurred torso", "blurred body", "distorted image",
-                "wavy texture", "liquid texture", "blurred background", "blurred foreground"
+                "wavy texture", "liquid texture", "blurred background", "blurred foreground",
+                "different clothing style", "different shirt design", "different cut",
+                "new clothing", "replacement clothing", "different fit", "altered design"
             ])
         
         if clothing_items.get('has_pants', False):  # Only if pants detected
             prompt_parts.extend([
-                "white pants", "white trousers", "white clothing"
+                "same pants style", "same trousers style", "white color pants",
+                "white colored pants", "white colored trousers", "white color only"
             ])
             negative_parts.extend([
                 "dark pants", "black pants", "gray pants", 
                 "jeans", "colored pants"
             ])
         
-        # Common parts
+        # Common parts - emphasize COLOR CHANGE ONLY
         prompt_parts.extend([
-            "natural clothing texture", "seamlessly integrated", 
-            "natural clothing replacement", "realistic white clothing",
-            "same person", "same pose", "same background", 
-            "natural fabric folds", "professional white clothing",
-            "clearly visible clothing", "sharp white shirt", 
-            "crisp white fabric", "well-lit white shirt",
+            "same clothing design", "same clothing style", "same clothing type",
+            "only color changed to white", "white color clothing", "white colored fabric",
+            "same person", "same pose", "same background", "same clothing fit",
+            "natural fabric texture", "same fabric texture white color",
+            "clearly visible white colored clothing", "sharp white colored shirt", 
+            "crisp white colored fabric", "well-lit white colored clothing",
             "fully visible person", "clear person", "sharp person",
-            "no overlay", "no blur", "crisp image", "sharp image"
+            "no overlay", "no blur", "crisp image", "sharp image",
+            "preserve clothing style", "keep same design", "same cut white color"
         ])
         
         prompt = ", ".join(prompt_parts)
