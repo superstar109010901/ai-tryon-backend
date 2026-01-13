@@ -207,7 +207,8 @@ class VastAIClient:
             else:
                 raise Exception("Mask is required for clothing replacement - binary clothes-only mask must be provided")
             
-            # Build payload matching exact format
+            # Build payload matching exact format for img2img INPAINT
+            # Must include inpainting parameters for proper inpainting mode
             payload = {
                 "init_images": [image_base64],
                 "mask": mask_b64,
@@ -219,9 +220,13 @@ class VastAIClient:
                 "sampler_name": sampler_name,
                 "width": width,
                 "height": height,
+                "inpainting_fill": 1,
+                "inpaint_full_res": True,
+                "inpaint_full_res_padding": 32,
             }
             
             # Add ControlNet using alwayson_scripts format with exact structure
+            # ControlNet settings tightened for better person preservation
             if controlnet_enabled and controlnet_model:
                 payload["alwayson_scripts"] = {
                     "ControlNet": {

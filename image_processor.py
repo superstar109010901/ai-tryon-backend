@@ -93,25 +93,25 @@ class ImageProcessor:
                 # Fallback to rectangle mask if segmentation fails
                 mask = self.generate_clothing_mask(image)
             
-            # Generate image using Vast.ai img2img API with inpainting + ControlNet
-            # Using exact payload structure as specified
+            # Generate image using Vast.ai img2img INPAINT API with inpainting + ControlNet
+            # Using exact payload structure: low denoise (0.4) + inpainting params + tightened ControlNet
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
-                prompt="realistic white shirt, clean fabric, studio lighting",
-                negative_prompt="jacket, hoodie, logo, pattern",
-                denoising_strength=0.65,
+                prompt="a realistic photo of the same man, wearing a plain white cotton shirt, same pose, same face, same background, same lighting, natural fabric folds, clean white shirt",
+                negative_prompt="different person, new person, mannequin, product photo, studio shot, floating clothes, flat lay, folded shirt, catalog image, jacket, hoodie, coat, logo, pattern",
+                denoising_strength=0.4,  # Low denoise: freeze everything except torso
                 steps=25,
                 cfg_scale=5,
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
-                # ControlNet configuration
+                # ControlNet configuration - tightened for person preservation
                 controlnet_enabled=True,
                 controlnet_model="controlnet-inpaint-dreamer-sdxl",
                 controlnet_module="none",
-                controlnet_weight=1.0,
-                controlnet_control_mode="Balanced",
+                controlnet_weight=1.2,  # Increased weight for stronger control
+                controlnet_control_mode="ControlNet is more important",  # Tell SD: DO NOT IGNORE THE PERSON
                 controlnet_pixel_perfect=True
             )
             
@@ -287,57 +287,112 @@ class ImageProcessor:
     
     def generate_clothing_mask(self, image: Image.Image) -> Image.Image:
         """
-        Generate a mask for inpainting where only clothing area can be changed.
+        Generate a precise mask for inpainting where only torso region can be changed.
         
-        Mask rules (VERY IMPORTANT):
-        - White (255) = area SD CAN change (clothing)
-        - Black (0) = area SD MUST NOT change (face, hair, body)
+        Mask requirements:
+        - White (255) = shirt area: Chest, Upper arms, Shoulder fabric
+        - Black (0) = everything else: Face, Neck, Background, Table
         
-        If the face is white even a little → SD will change it.
+        If mask is:
+        - Too large → background changes
+        - Too small → shirt floats/disappears
+        - Missing → model ignores person entirely
         
         Args:
             image: Input PIL Image
         
         Returns:
-            PIL Image mask (white = inpaint/clothing area, black = preserve)
+            PIL Image mask (white = torso/shirt area, black = preserve everything else)
         """
-        from PIL import ImageDraw, ImageFilter
+        from PIL import ImageDraw
         
         width, height = image.size
         
         # Create mask: start with all black (preserve everything)
         mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
         
-        # Define clothing area (torso/body region)
-        # IMPORTANT: Keep face and head area completely black (0) to preserve person identity
-        # Mask covers ONLY body/clothing area (white) - face, head, hair, background are black (preserved)
-        # ControlNet will preserve body structure and person identity
+        # Define precise torso region (chest, upper arms, shoulder fabric)
+        # Exclude: Face, Neck, Background, Table
         
-        # Face and head protection zone (top 35% - keep black to preserve person identity)
-        # Increased protection to ensure face/head/hair are never touched
-        face_bottom = int(height * 0.35)
+        # Face and neck protection zone (top 40% - keep black)
+        # This ensures face and neck are NEVER touched
+        face_neck_bottom = int(height * 0.40)
         
-        # Clothing/body area ONLY (make white for inpainting)
-        # Only the torso/body clothing area - face and head are protected
-        clothing_top = int(height * 0.30)  # Start below face/head area
-        clothing_bottom = int(height * 0.80)  # End before lower body/legs
-        clothing_left = int(width * 0.12)  # Slight margins
-        clothing_right = int(width * 0.88)  # Slight margins
+        # Torso region (chest, upper arms, shoulders)
+        # Start below neck, end before lower body
+        torso_top = int(height * 0.40)  # Start below neck
+        torso_bottom = int(height * 0.75)  # End before lower body/waist
         
-        # Draw white rectangle for clothing area only
-        # This is the area SD can change
+        # Chest area (center)
+        chest_left = int(width * 0.20)  # Left edge of chest
+        chest_right = int(width * 0.80)  # Right edge of chest
+        
+        # Upper arms and shoulders (wider than chest)
+        # Shoulders extend beyond chest
+        shoulder_left = int(width * 0.10)  # Left shoulder/arm
+        shoulder_right = int(width * 0.90)  # Right shoulder/arm
+        
+        # Draw torso region: chest + upper arms + shoulders
         draw = ImageDraw.Draw(mask)
+        
+        # Main torso/chest rectangle
         draw.rectangle(
-            [(clothing_left, clothing_top), (clothing_right, clothing_bottom)],
+            [(chest_left, torso_top), (chest_right, torso_bottom)],
             fill=255  # White = SD can change this area
         )
         
-        # Apply Gaussian blur for soft edges (better blending)
-        # This helps with smoother transitions
-        mask = mask.filter(ImageFilter.GaussianBlur(radius=15))
+        # Left upper arm and shoulder
+        # Extends from shoulder to mid-torso
+        left_arm_top = torso_top
+        left_arm_bottom = int(height * 0.60)  # Upper arm ends mid-torso
+        draw.rectangle(
+            [(shoulder_left, left_arm_top), (chest_left, left_arm_bottom)],
+            fill=255  # White = upper arm/shoulder area
+        )
         
-        logger.info(f"Generated mask: clothing area ({clothing_left},{clothing_top}) to ({clothing_right},{clothing_bottom})")
-        logger.info(f"Face area (top {face_bottom}px) is protected (black)")
+        # Right upper arm and shoulder
+        right_arm_top = torso_top
+        right_arm_bottom = int(height * 0.60)  # Upper arm ends mid-torso
+        draw.rectangle(
+            [(chest_right, right_arm_top), (shoulder_right, right_arm_bottom)],
+            fill=255  # White = upper arm/shoulder area
+        )
+        
+        # Ensure face/neck area is completely black (no white pixels)
+        # This is critical - even a few white pixels will cause face changes
+        draw.rectangle(
+            [(0, 0), (width, face_neck_bottom)],
+            fill=0  # Black = preserve face and neck
+        )
+        
+        # Ensure bottom area (table, background) is black
+        draw.rectangle(
+            [(0, torso_bottom), (width, height)],
+            fill=0  # Black = preserve background/table
+        )
+        
+        # Ensure side margins (background) are black
+        draw.rectangle(
+            [(0, 0), (shoulder_left, height)],
+            fill=0  # Black = preserve left background
+        )
+        draw.rectangle(
+            [(shoulder_right, 0), (width, height)],
+            fill=0  # Black = preserve right background
+        )
+        
+        # Convert to pure black/white (no gray pixels)
+        # This ensures strict mask: white = change, black = preserve
+        mask_array = np.array(mask)
+        mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
+        mask = Image.fromarray(mask_array, mode='L')
+        
+        # Log mask statistics
+        white_pixels = np.sum(mask_array == 255)
+        total_pixels = mask_array.size
+        logger.info(f"Generated precise torso mask: {white_pixels} white pixels ({white_pixels/total_pixels*100:.1f}%)")
+        logger.info(f"Mask includes: Chest, Upper arms, Shoulder fabric")
+        logger.info(f"Mask excludes: Face (top {face_neck_bottom}px), Neck, Background, Table")
         
         return mask
     
