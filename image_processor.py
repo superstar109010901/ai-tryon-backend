@@ -37,11 +37,23 @@ class ImageProcessor:
     """
     Processes images for virtual try-on using Vast.ai Stable Diffusion API.
     
+    APPROACH: True Try-On (Garment Replacement)
+    - Shirt is replaced entirely with new white garment
+    - Some style change is acceptable (SDXL is appropriate)
+    - NOT doing texture-space recolor (color-only changes)
+    
+    For texture-space recolor (color-only):
+    - Would extract clothing region → UV/texture-space → RGB recolor → reproject
+    - SDXL would NOT be used (only for refinement)
+    - Preserves body, pose, prevents foot distortion
+    
     Workflow:
     1. Load and preprocess input image
-    2. Send image to Vast.ai img2img API with static prompts
-    3. Receive generated image
-    4. Save and return result
+    2. Detect person and clothing using ControlNet
+    3. Generate mask for garment replacement
+    4. Send to Vast.ai img2img API for true try-on (garment replacement)
+    5. Receive generated image with replaced garment
+    6. Save and return result
     """
     
     def __init__(self, vast_ai_url: str):
@@ -146,16 +158,18 @@ class ImageProcessor:
                 logger.warning(f"Could not save debug mask: {e}")
             
             # Generate image using Vast.ai img2img INPAINT API with inpainting
-            # RECOLOR FIX #2: Higher denoising (0.65) required for color-only edits
-            # Below 0.55, SDXL often refuses to recolor
+            # TRUE TRY-ON APPROACH: Replacing garment entirely (not pure recolor)
+            # SDXL is appropriate for true try-on - some style change is acceptable
+            # For texture-space recolor (color-only), SDXL would NOT be used
+            # We're doing garment replacement, so higher denoising allows full replacement
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                denoising_strength=0.65,  # RECOLOR FIX #2: 0.65 (was 0.45) - required for recolor
+                denoising_strength=0.65,  # True try-on: 0.65 allows full garment replacement
                 steps=30,  # More steps for better quality and blending
-                cfg_scale=5,  # RECOLOR FIX #4: Reduced to 5 (was 6) per minimal working config
+                cfg_scale=5,  # Balanced CFG for garment replacement
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
@@ -501,13 +515,14 @@ class ImageProcessor:
             "digital overlay", "sharp edges", "visible seams"
         ]
         
-        # FIX 3: Prompt must say REPLACE, not ADD - this matters for SDXL
-        # FIX 4: Kill "same shirt style" entirely - it's actively harmful during recolor
-        # Replace with "same fit, different color"
+        # TRUE TRY-ON: Garment replacement (not pure recolor)
+        # For true try-on: Shirt is replaced entirely, some style change is acceptable
+        # SDXL is appropriate for this use case
+        # Prompts emphasize REPLACEMENT, not just color change
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
-                "the original shirt is replaced with a plain white shirt",  # FIX 3: REPLACE language
-                "same fit, different color",  # FIX 4: Replaces "same shirt style"
+                "the original shirt is replaced with a plain white shirt",  # REPLACE language for true try-on
+                "new white shirt", "replacement white shirt",  # Emphasize replacement
                 "pure white shirt", "RGB(255,255,255)",
                 "neutral white fabric", "white colored shirt",
                 "white colored sleeves", "white fabric color"
@@ -542,14 +557,15 @@ class ImageProcessor:
                 "jeans", "colored pants", "blue jeans", "dark jeans"
             ])
         
-        # FIX 3 & 4: Emphasize REPLACEMENT and color change, remove style anchoring
-        # Keep structure preservation (person, pose, background) but emphasize replacement
+        # TRUE TRY-ON: Emphasize garment REPLACEMENT (not recolor)
+        # Preserve structure (person, pose, background) but allow garment replacement
+        # Some style change is acceptable for true try-on
         prompt_parts.extend([
-            "the original clothing is replaced with white clothing",  # FIX 3: REPLACE language
-            "same fit, different color",  # FIX 4: Replaces style anchoring
+            "the original clothing is replaced with white clothing",  # REPLACE language for true try-on
+            "new white clothing", "replacement white garment",  # Emphasize replacement
             "RGB(255,255,255)", "neutral white fabric",
             "white color clothing", "white colored fabric",
-            "same person", "same pose", "same background",  # Preserve structure, not style
+            "same person", "same pose", "same background",  # Preserve structure
             "natural fabric texture", "white fabric texture",
             "clearly visible white colored clothing", "sharp white colored shirt", 
             "crisp white colored fabric", "well-lit white colored clothing",

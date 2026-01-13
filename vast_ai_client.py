@@ -317,9 +317,10 @@ class VastAIClient:
             # Must include inpainting parameters for proper inpainting mode
             # CRITICAL: Use inpainting_fill: 0 (latent noise) for natural blending, not 1 (original)
             # inpainting_fill: 0 = better blending, 1 = can look pasted/overlaid
-            # RECOLOR FIX #1: masked_content = latent_noise (0) to allow color changes
-            # For clothing recolor, we MUST use latent_noise to break color continuity
-            # Using "original" (1) preserves pixels and prevents recolor
+            # TRUE TRY-ON: Garment replacement (not pure recolor)
+            # For true try-on with SDXL: masked_content = latent_noise allows full garment replacement
+            # For texture-space recolor (color-only): SDXL would NOT be used - would use UV/texture-space approach
+            # We're doing garment replacement, so latent_noise is appropriate
             payload = {
                 "init_images": [image_base64],
                 "mask": mask_b64,
@@ -331,7 +332,7 @@ class VastAIClient:
                 "sampler_name": sampler_name,
                 "width": width,
                 "height": height,
-                "inpainting_fill": 0,  # RECOLOR FIX #1: 0 = latent_noise (allows recolor), NOT original (1)
+                "inpainting_fill": 0,  # 0 = latent_noise (allows full garment replacement for true try-on)
                 "inpaint_full_res": True,  # True for better quality
                 "inpaint_full_res_padding": 32,  # Padding for blending
                 "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
