@@ -80,13 +80,23 @@ class ImageProcessor:
                 logger.info(f"Resized image to {image.size}")
             
             # Generate mask for inpainting
-            # CRITICAL: Use reliable geometric mask instead of segmentation
-            # Segmentation can misdetect face as clothing or vice versa
-            # Geometric mask ensures: White = shirt area (torso), Black = everything else (face, neck, background)
-            logger.info("Generating precise torso mask (chest, upper arms, shoulders)...")
-            mask = self.generate_clothing_mask(image)
+            # Step 1: Detect face using ControlNet for precise face protection
+            logger.info("Detecting face area using ControlNet...")
+            face_detection = None
+            try:
+                face_detection = await self.vast_ai_client.detect_face_area(image)
+                if face_detection is not None:
+                    logger.info("✅ Face detection successful - using detected face area for protection")
+                else:
+                    logger.warning("⚠️  Face detection failed - will use fallback protection")
+            except Exception as e:
+                logger.warning(f"Face detection error: {e} - will use fallback protection")
             
-            # Verify mask is correct: should have white pixels in torso region only
+            # Step 2: Generate clothing mask (shirt + pants)
+            logger.info("Generating clothing mask (shirt + pants)...")
+            mask = self.generate_clothing_mask(image, face_detection)
+            
+            # Verify mask is correct: should have white pixels in clothing region only
             mask_array = np.array(mask)
             white_pixels = np.sum(mask_array == 255)
             total_pixels = mask_array.size
@@ -94,15 +104,7 @@ class ImageProcessor:
             logger.info(f"Mask verification: {white_pixels} white pixels ({white_ratio*100:.1f}% of image)")
             
             if white_ratio < 0.05 or white_ratio > 0.40:
-                logger.warning(f"Mask white ratio ({white_ratio*100:.1f}%) seems unusual. Expected 10-30% for torso region.")
-            
-            # Ensure top 25% is completely black (face/head protection only)
-            # Reduced from 40% to 25% to allow shirt collar/upper shirt area to be changed
-            height = mask_array.shape[0]
-            face_protection = int(height * 0.25)  # Only protect face/head, not shirt collar
-            mask_array[:face_protection, :] = 0
-            mask = Image.fromarray(mask_array, mode='L')
-            logger.info(f"Face/head area (top {face_protection}px) forced to black - shirt collar area is now changeable")
+                logger.warning(f"Mask white ratio ({white_ratio*100:.1f}%) seems unusual. Expected 10-30% for clothing region.")
             
             # Final verification: ensure mask has sufficient white pixels for shirt area
             final_white = np.sum(mask_array == 255)
@@ -110,7 +112,9 @@ class ImageProcessor:
             logger.info(f"=== MASK VERIFICATION ===")
             logger.info(f"White pixels: {final_white} ({final_white_ratio*100:.2f}% of image)")
             logger.info(f"Black pixels: {mask_array.size - final_white} ({(1-final_white_ratio)*100:.2f}% of image)")
-            logger.info(f"Face area (top {face_protection}px): {np.sum(mask_array[:face_protection, :] == 255)} white pixels (should be 0)")
+            # Count face area white pixels (should be 0)
+            face_white_pixels = np.sum(mask_array[:int(mask_array.shape[0] * 0.3), :] == 255)
+            logger.info(f"Face area (top 30%): {face_white_pixels} white pixels (should be 0)")
             
             if final_white_ratio < 0.10:
                 logger.warning(f"⚠️  Mask white ratio ({final_white_ratio*100:.1f}%) is very low. Shirt might not change.")
@@ -332,7 +336,55 @@ class ImageProcessor:
         
         return mask
     
-    def generate_clothing_mask(self, image: Image.Image) -> Image.Image:
+    def create_face_mask_from_detection(self, face_detection: Image.Image, original_image: Image.Image) -> Image.Image:
+        """
+        Create a face protection mask from ControlNet face detection.
+        
+        Args:
+            face_detection: Face detection map from ControlNet
+            original_image: Original input image (for size matching)
+        
+        Returns:
+            PIL Image mask (white = face area to protect, black = everything else)
+        """
+        import numpy as np
+        
+        width, height = original_image.size
+        
+        # Resize detection to match original image size
+        detection = face_detection.resize((width, height), Image.Resampling.LANCZOS)
+        detection_array = np.array(detection)
+        
+        # Create face mask: white where face is detected, black elsewhere
+        # Face detection typically shows face as bright/colored areas
+        # Convert to grayscale if needed
+        if len(detection_array.shape) == 3:
+            # RGB image - convert to grayscale
+            detection_gray = np.mean(detection_array, axis=2).astype(np.uint8)
+        else:
+            detection_gray = detection_array
+        
+        # Threshold: bright areas are likely face
+        # Face detection maps usually have high values where face is detected
+        threshold = np.percentile(detection_gray, 70)  # Top 30% brightest = face area
+        face_mask_array = (detection_gray > threshold).astype(np.uint8) * 255
+        
+        # Dilate the mask slightly to ensure full face coverage
+        try:
+            from scipy import ndimage
+            face_mask_array = ndimage.binary_dilation(face_mask_array > 127, structure=np.ones((5, 5))).astype(np.uint8) * 255
+        except ImportError:
+            # If scipy not available, use PIL filters
+            from PIL import ImageFilter
+            face_mask_pil = Image.fromarray(face_mask_array, mode='L')
+            face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(5))  # Dilate
+            face_mask_array = np.array(face_mask_pil)
+        
+        logger.info(f"Face mask created: {np.sum(face_mask_array == 255)} white pixels ({np.sum(face_mask_array == 255)/face_mask_array.size*100:.1f}% of image)")
+        
+        return Image.fromarray(face_mask_array, mode='L')
+    
+    def generate_clothing_mask(self, image: Image.Image, face_detection: Optional[Image.Image] = None) -> Image.Image:
         """
         Generate a precise mask for inpainting where ALL CLOTHES can be changed.
         
@@ -357,17 +409,27 @@ class ImageProcessor:
         width, height = image.size
         
         # Create mask: start with ALL BLACK (preserve everything)
-        # This is critical - we only mark shirt area as white
+        # This is critical - we only mark clothing area as white
         mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
         
-        # CRITICAL: Face and head protection zone (top 25% - MUST be black)
-        # Reduced from 40% to 25% to allow shirt collar and upper shirt to be changed
-        # Only protect face/head, not the shirt collar area
-        face_neck_bottom = int(height * 0.25)  # Only protect face/head area
+        # Create face protection mask from ControlNet detection if available
+        face_mask = None
+        if face_detection is not None:
+            try:
+                face_mask = self.create_face_mask_from_detection(face_detection, image)
+                logger.info("Using ControlNet face detection for face protection")
+            except Exception as e:
+                logger.warning(f"Failed to create face mask from detection: {e}, using fallback")
+                face_mask = None
+        
+        # Fallback: if face detection failed, use conservative top 20% protection
+        # This is much smaller than before to allow shirt collar to be changed
+        face_protection_fallback = int(height * 0.20) if face_mask is None else None
         
         # CLOTHING REGION: Cover ALL clothes (shirt + pants)
-        # Shirt region: from below head to waist/hips - FULL coverage including collar
-        shirt_top = int(height * 0.25)  # Start right below face protection to catch shirt collar
+        # Shirt region: start from very top to catch full shirt including collar
+        # We'll protect face area separately using detected face mask
+        shirt_top = int(height * 0.15)  # Start high to catch shirt collar (will be protected by face mask)
         shirt_bottom = int(height * 0.78)  # Extend lower to cover full shirt including untucked part
         
         # Pants/Trousers region: from waist to just above shoes
@@ -421,20 +483,31 @@ class ImageProcessor:
             fill=255  # White = SD can change this area (pants/trousers)
         )
         
-        # CRITICAL: Force face/head area to be COMPLETELY BLACK
+        # CRITICAL: Apply face protection mask
         # This MUST be done AFTER drawing shirt/pants to ensure face protection
-        # Only protect the actual face/head area (top 25%), not the shirt collar
-        draw.rectangle(
-            [(0, 0), (width, face_neck_bottom)],
-            fill=0  # Black = preserve face and head only (DO NOT CHANGE)
-        )
+        if face_mask is not None:
+            # Use detected face mask to protect face area precisely
+            face_mask_array = np.array(face_mask)
+            # Invert: face mask is white where face is, we want black (protect)
+            # So set mask to black where face_mask is white
+            mask_array = np.array(mask)
+            mask_array[face_mask_array > 127] = 0  # Protect face area (set to black)
+            mask = Image.fromarray(mask_array, mode='L')
+            logger.info("Applied ControlNet face detection mask for face protection")
+        else:
+            # Fallback: use percentage-based protection (conservative)
+            draw.rectangle(
+                [(0, 0), (width, face_protection_fallback)],
+                fill=0  # Black = preserve face/head area (DO NOT CHANGE)
+            )
+            logger.info(f"Using fallback face protection (top {face_protection_fallback*100/height:.1f}%)")
         
         # Re-draw shirt area AFTER face protection to ensure shirt mask is not lost
-        # This ensures shirt area (below face/head) remains white, including collar area
-        # Shirt starts at 25% (right below face protection) to catch full shirt including collar
+        # This ensures shirt area (outside face) remains white, including collar area
+        draw = ImageDraw.Draw(mask)
         draw.rectangle(
             [(chest_left, shirt_top), (chest_right, shirt_bottom)],
-            fill=255  # White = SD can change this area (FULL shirt including collar)
+            fill=255  # White = SD can change this area (FULL shirt including collar, except face)
         )
         draw.rectangle(
             [(shoulder_left, left_arm_top), (chest_left, left_arm_bottom)],
@@ -444,6 +517,13 @@ class ImageProcessor:
             [(chest_right, right_arm_top), (shoulder_right, right_arm_bottom)],
             fill=255  # White = FULL arm/shoulder area
         )
+        
+        # Re-apply face protection after re-drawing shirt
+        if face_mask is not None:
+            mask_array = np.array(mask)
+            face_mask_array = np.array(face_mask)
+            mask_array[face_mask_array > 127] = 0  # Protect face area again
+            mask = Image.fromarray(mask_array, mode='L')
         
         # Ensure bottom area (shoes, feet, background) is black
         draw.rectangle(
@@ -466,23 +546,39 @@ class ImageProcessor:
         mask_array = np.array(mask)
         mask_array = np.where(mask_array > 127, 255, 0).astype(np.uint8)
         
-        # TRIPLE-CHECK: Force face area to be black (even if somehow white pixels got in)
-        mask_array[:face_neck_bottom, :] = 0
+        # TRIPLE-CHECK: Force face area to be black using face mask or fallback
+        mask_array = np.array(mask)
+        if face_mask is not None:
+            face_mask_array = np.array(face_mask)
+            mask_array[face_mask_array > 127] = 0  # Protect detected face area
+        else:
+            # Fallback protection
+            mask_array[:face_protection_fallback, :] = 0
         
         # Verify mask correctness
         white_pixels = np.sum(mask_array == 255)
-        face_area_pixels = np.sum(mask_array[:face_neck_bottom, :] == 255)
         total_pixels = mask_array.size
         
-        if face_area_pixels > 0:
-            logger.error(f"CRITICAL ERROR: {face_area_pixels} white pixels found in face area! Forcing to black...")
-            mask_array[:face_neck_bottom, :] = 0
+        # Check face area white pixels
+        if face_mask is not None:
+            face_mask_array = np.array(face_mask)
+            face_area_pixels = np.sum((mask_array == 255) & (face_mask_array > 127))
+            if face_area_pixels > 0:
+                logger.error(f"CRITICAL ERROR: {face_area_pixels} white pixels found in detected face area! Forcing to black...")
+                mask_array[face_mask_array > 127] = 0
+            face_protection_info = f"ControlNet detected face area"
+        else:
+            face_area_pixels = np.sum(mask_array[:face_protection_fallback, :] == 255)
+            if face_area_pixels > 0:
+                logger.error(f"CRITICAL ERROR: {face_area_pixels} white pixels found in face area! Forcing to black...")
+                mask_array[:face_protection_fallback, :] = 0
+            face_protection_info = f"Fallback protection (top {face_protection_fallback*100/height:.1f}%)"
         
         logger.info(f"Generated clothing mask (shirt + pants):")
         logger.info(f"  - White pixels (clothing area): {white_pixels} ({white_pixels/total_pixels*100:.1f}%)")
-        logger.info(f"  - Face/head area white pixels: {np.sum(mask_array[:face_neck_bottom, :] == 255)} (should be 0)")
+        logger.info(f"  - Face protection: {face_protection_info}")
         logger.info(f"  - Mask includes: Shirt (FULL including collar), Pants/Trousers, Upper arms, Shoulder fabric")
-        logger.info(f"  - Mask excludes: Face/head (top {face_neck_bottom}px = {face_neck_bottom*100/height:.1f}%), Background, Shoes, Feet, Hands")
+        logger.info(f"  - Mask excludes: Face/head (detected or top 20%), Background, Shoes, Feet, Hands")
         logger.info(f"  - Shirt mask: {shirt_top*100/height:.1f}% to {shirt_bottom*100/height:.1f}% of image height")
         
         mask = Image.fromarray(mask_array, mode='L')

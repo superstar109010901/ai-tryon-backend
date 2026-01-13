@@ -69,6 +69,67 @@ class VastAIClient:
         img_data = base64.b64decode(img_base64)
         return Image.open(io.BytesIO(img_data))
     
+    async def detect_face_area(self, image: Image.Image) -> Optional[Image.Image]:
+        """
+        Detect face area using ControlNet face detection.
+        Uses mediapipe_face or openpose_full to detect face/head region.
+        
+        Args:
+            image: Input PIL Image
+        
+        Returns:
+            Face detection map as PIL Image, or None if detection fails
+        """
+        try:
+            image_base64 = self._image_to_base64(image)
+            
+            # Try mediapipe_face first (better for face detection)
+            # Fallback to openpose_full if mediapipe_face not available
+            modules_to_try = ["mediapipe_face", "openpose_full", "openpose"]
+            
+            for module_name in modules_to_try:
+                try:
+                    payload = {
+                        "controlnet_module": module_name,
+                        "controlnet_input_images": [image_base64],
+                        "controlnet_processor_res": 512,
+                    }
+                    
+                    logger.info(f"Requesting face detection using {module_name}...")
+                    
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                        async with session.post(
+                            self.controlnet_detect_endpoint,
+                            json=payload,
+                            headers={"Content-Type": "application/json"}
+                        ) as response:
+                            if response.status == 200:
+                                result = await response.json()
+                                
+                                if "images" not in result or len(result["images"]) == 0:
+                                    logger.warning(f"No detection image returned from {module_name}")
+                                    continue
+                                
+                                detection_base64 = result["images"][0]
+                                detection_image = self._base64_to_image(detection_base64)
+                                
+                                logger.info(f"Face detection successful using {module_name}")
+                                return detection_image
+                            else:
+                                logger.warning(f"{module_name} returned status {response.status}, trying next...")
+                                continue
+                
+                except Exception as e:
+                    logger.warning(f"Error with {module_name}: {e}, trying next...")
+                    continue
+            
+            logger.warning("All face detection methods failed, falling back to percentage-based protection")
+            return None
+                    
+        except Exception as e:
+            logger.error(f"Error in face detection: {e}")
+            return None
+    
     async def get_segmentation_map(self, image: Image.Image) -> Image.Image:
         """
         Get segmentation map from ControlNet segmentation preprocessor.
