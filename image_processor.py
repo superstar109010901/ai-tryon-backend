@@ -146,15 +146,16 @@ class ImageProcessor:
                 logger.warning(f"Could not save debug mask: {e}")
             
             # Generate image using Vast.ai img2img INPAINT API with inpainting
-            # Use balanced denoising + natural blending parameters for seamless clothing replacement
+            # RECOLOR FIX #2: Higher denoising (0.65) required for color-only edits
+            # Below 0.55, SDXL often refuses to recolor
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 mask=mask,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                denoising_strength=0.45,  # Moderate denoising (0.45): changes color while preserving clothing style and details
+                denoising_strength=0.65,  # RECOLOR FIX #2: 0.65 (was 0.45) - required for recolor
                 steps=30,  # More steps for better quality and blending
-                cfg_scale=6,  # Balanced CFG for natural results
+                cfg_scale=5,  # RECOLOR FIX #4: Reduced to 5 (was 6) per minimal working config
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
@@ -500,15 +501,14 @@ class ImageProcessor:
             "digital overlay", "sharp edges", "visible seams"
         ]
         
-        # Add clothing-specific prompts based on what exists
-        # Focus on COLOR CHANGE ONLY - keep same clothing style
+        # RECOLOR FIX #3: Make color dominant in prompt - remove style anchoring
+        # RECOLOR FIX #4: Remove "same shirt style" - it anchors color and prevents recolor
+        # Use "pure white" and "all clothing is white" to elevate color above style
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
-                "same shirt style", "same clothing style", "same shirt type",
-                "white color", "pure white clothing", "RGB(255,255,255)", "white colored shirt", "white colored clothing",
-                "change color to white", "white color only", "white colored fabric",
-                "same design white", "same style white", "white version of same shirt",
-                "white colored shirt", "white colored sleeves", "white fabric color"
+                "pure white shirt", "all clothing is white", "RGB(255,255,255)",
+                "neutral white fabric", "pure white clothing", "white colored shirt",
+                "white colored sleeves", "white fabric color", "white colored clothing"
             ])
             negative_parts.extend([
                 "gray shirt", "black shirt", "colored shirt", 
@@ -528,11 +528,11 @@ class ImageProcessor:
                 "new clothing", "replacement clothing", "different fit", "altered design"
             ])
         
-        # INCLUDE pants in prompt - change entire clothing to white
+        # RECOLOR FIX #3: Make color dominant for pants too - remove style anchoring
         if clothing_items.get('has_pants', False):  # Include pants if detected
             prompt_parts.extend([
-                "same pants style", "same trousers style", "white color pants",
-                "white colored pants", "white colored trousers", "white color only",
+                "pure white pants", "pure white trousers", "all clothing is white",
+                "RGB(255,255,255)", "white colored pants", "white colored trousers",
                 "white colored jeans", "white pants", "white trousers"
             ])
             negative_parts.extend([
@@ -540,17 +540,17 @@ class ImageProcessor:
                 "jeans", "colored pants", "blue jeans", "dark jeans"
             ])
         
-        # Common parts - emphasize COLOR CHANGE ONLY
+        # RECOLOR FIX #3: Emphasize color over style - remove style preservation phrases
+        # Keep structure preservation (person, pose, background) but remove style anchoring
         prompt_parts.extend([
-            "same clothing design", "same clothing style", "same clothing type",
-            "only color changed to white", "white color clothing", "white colored fabric",
-            "same person", "same pose", "same background", "same clothing fit",
-            "natural fabric texture", "same fabric texture white color",
+            "all clothing is pure white", "RGB(255,255,255)", "neutral white fabric",
+            "white color clothing", "white colored fabric",
+            "same person", "same pose", "same background",  # Preserve structure, not style
+            "natural fabric texture", "white fabric texture",
             "clearly visible white colored clothing", "sharp white colored shirt", 
             "crisp white colored fabric", "well-lit white colored clothing",
             "fully visible person", "clear person", "sharp person",
-            "no overlay", "no blur", "crisp image", "sharp image",
-            "preserve clothing style", "keep same design", "same cut white color"
+            "no overlay", "no blur", "crisp image", "sharp image"
         ])
         
         prompt = ", ".join(prompt_parts)

@@ -317,7 +317,9 @@ class VastAIClient:
             # Must include inpainting parameters for proper inpainting mode
             # CRITICAL: Use inpainting_fill: 0 (latent noise) for natural blending, not 1 (original)
             # inpainting_fill: 0 = better blending, 1 = can look pasted/overlaid
-            # FIX 2: Hard inpaint rules (mandatory) - eliminates fog artifacts
+            # RECOLOR FIX #1: masked_content = latent_noise (0) to allow color changes
+            # For clothing recolor, we MUST use latent_noise to break color continuity
+            # Using "original" (1) preserves pixels and prevents recolor
             payload = {
                 "init_images": [image_base64],
                 "mask": mask_b64,
@@ -329,11 +331,11 @@ class VastAIClient:
                 "sampler_name": sampler_name,
                 "width": width,
                 "height": height,
-                "inpainting_fill": 1,  # FIX 2: 1 = original (masked_content = original) - eliminates fog
-                "inpaint_full_res": True,  # FIX 2: True (mandatory) - eliminates fog artifacts
-                "inpaint_full_res_padding": 32,  # FIX 2: 32 (mandatory)
+                "inpainting_fill": 0,  # RECOLOR FIX #1: 0 = latent_noise (allows recolor), NOT original (1)
+                "inpaint_full_res": True,  # True for better quality
+                "inpaint_full_res_padding": 32,  # Padding for blending
                 "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
-                "mask_blur": 6,  # FIX 2: 6 (mandatory) - was 8, reduced to eliminate fog
+                "mask_blur": 6,  # Moderate blur for smooth edges
             }
             
             # Add ControlNet using controlnet_units format with TWO units:
