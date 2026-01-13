@@ -501,14 +501,16 @@ class ImageProcessor:
             "digital overlay", "sharp edges", "visible seams"
         ]
         
-        # RECOLOR FIX #3: Make color dominant in prompt - remove style anchoring
-        # RECOLOR FIX #4: Remove "same shirt style" - it anchors color and prevents recolor
-        # Use "pure white" and "all clothing is white" to elevate color above style
+        # FIX 3: Prompt must say REPLACE, not ADD - this matters for SDXL
+        # FIX 4: Kill "same shirt style" entirely - it's actively harmful during recolor
+        # Replace with "same fit, different color"
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
-                "pure white shirt", "all clothing is white", "RGB(255,255,255)",
-                "neutral white fabric", "pure white clothing", "white colored shirt",
-                "white colored sleeves", "white fabric color", "white colored clothing"
+                "the original shirt is replaced with a plain white shirt",  # FIX 3: REPLACE language
+                "same fit, different color",  # FIX 4: Replaces "same shirt style"
+                "pure white shirt", "RGB(255,255,255)",
+                "neutral white fabric", "white colored shirt",
+                "white colored sleeves", "white fabric color"
             ])
             negative_parts.extend([
                 "gray shirt", "black shirt", "colored shirt", 
@@ -540,10 +542,12 @@ class ImageProcessor:
                 "jeans", "colored pants", "blue jeans", "dark jeans"
             ])
         
-        # RECOLOR FIX #3: Emphasize color over style - remove style preservation phrases
-        # Keep structure preservation (person, pose, background) but remove style anchoring
+        # FIX 3 & 4: Emphasize REPLACEMENT and color change, remove style anchoring
+        # Keep structure preservation (person, pose, background) but emphasize replacement
         prompt_parts.extend([
-            "all clothing is pure white", "RGB(255,255,255)", "neutral white fabric",
+            "the original clothing is replaced with white clothing",  # FIX 3: REPLACE language
+            "same fit, different color",  # FIX 4: Replaces style anchoring
+            "RGB(255,255,255)", "neutral white fabric",
             "white color clothing", "white colored fabric",
             "same person", "same pose", "same background",  # Preserve structure, not style
             "natural fabric texture", "white fabric texture",
@@ -615,34 +619,37 @@ class ImageProcessor:
             head_region_mask = np.zeros((height, width), dtype=bool)
             head_region_mask[:int(height * 0.40), :] = True  # Top 40% is head/face/neck region (increased from 35%)
             
-            # Exclude hands: Usually in lower-middle region, detect skin tones
+            # FIX 2: Temporarily INCLUDE hands for upper-garment edits
+            # Hands define garment ownership - excluding them causes "held object" hallucinations
+            # We'll subtract skin-tone pixels only (not geometry) later
             # Skin tones: High R and G, medium B
             skin_mask = (r > 120) & (g > 100) & (b < r * 0.9) & (b < g * 0.9) & (r < 220) & (g < 200)
-            # Hands are usually in middle-lower region, not in clothing area
-            hands_region = np.zeros((height, width), dtype=bool)
-            # Exclude areas that might be hands (middle region, sides)
-            hands_region[int(height * 0.3):int(height * 0.7), :int(width * 0.15)] = True  # Left side
-            hands_region[int(height * 0.3):int(height * 0.7), int(width * 0.85):] = True  # Right side
             
             # Exclude background: Usually has different characteristics
             # Background is often less saturated or has different color distribution
             # For now, we'll rely on segmentation to exclude background
             
-            # Remove face, head, hands, and background from clothing mask
-            # Keep pants - we want to change entire clothing (shirt + pants) to white
-            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask) & (~hands_region)
+            # Remove face, head, and skin tones from clothing mask (NOT hands geometry)
+            # FIX 2: Do NOT exclude hands_region - allow hand overlap with shirt mask
+            # We'll subtract skin-tone pixels only, not the entire hand geometry
+            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask)
             
             # Set clothing regions to white (255)
             mask_array[clothing_mask] = 255
             
-            # FIX 1: ALWAYS force geometric shirt inclusion (handles dark clothes: black, navy, dark green, shadowed)
-            # Color-based detection fails on dark clothes, so we MUST include geometric shirt region
-            # This ensures shirt is ALWAYS in mask, regardless of segmentation success
-            # Shirt geometry: 15%-65% height (as per requirement), but we'll apply it and let face protection handle exclusion
+            # FIX 1: Force full upper-garment mask (NON-NEGOTIABLE)
+            # Add hard geometric override for shirts AFTER all exclusions
+            # This guarantees: collar included, chest included, no "floating garment" behavior
             y_coords, x_coords = np.ogrid[:height, :width]
-            shirt_geom = (y_coords > 0.15 * height) & (y_coords < 0.65 * height)
-            mask_array[shirt_geom] = 255  # Force shirt inclusion (face protection will remove top 40% later)
-            logger.info(f"✅ FIX 1: Forced geometric shirt inclusion (15%-65% height) to handle dark clothes")
+            upper_torso_mask = (y_coords > 0.18 * height) & (y_coords < 0.62 * height)
+            # Apply after exclusions - this ensures shirt is FULLY included
+            mask_array[upper_torso_mask] = 255  # Force full upper-garment inclusion
+            logger.info(f"✅ FIX 1: Forced full upper-garment mask (18%-62% height) - collar and chest included")
+            
+            # FIX 2: Subtract skin-tone pixels from mask (but keep hand geometry in mask)
+            # This prevents hands from being recolored while allowing shirt to extend to hands
+            mask_array[skin_mask] = 0  # Remove skin pixels only, not entire hand region
+            logger.info(f"✅ FIX 2: Subtracted skin-tone pixels only (hands geometry remains in mask)")
             
             logger.info(f"Created clothing mask from segmentation: {np.sum(mask_array == 255)} white pixels ({np.sum(mask_array == 255)/mask_array.size*100:.1f}% of image)")
         else:
