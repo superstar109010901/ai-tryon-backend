@@ -152,19 +152,22 @@ class ImageProcessor:
                 mask=mask,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                denoising_strength=0.75,  # Increased: need higher denoising to change dark grey shirt to white
+                denoising_strength=0.30,  # Low denoising (0.25-0.35): locks full body, preserves face, changes only clothes
                 steps=30,  # More steps for better quality and blending
                 cfg_scale=6,  # Balanced CFG for natural results
                 sampler_name="DPM++ SDE",
                 width=1024,
                 height=1024,
-                # ControlNet enabled for person preservation
-                # Using openpose_full to preserve person pose and structure
-                controlnet_enabled=True,  # Enabled: helps preserve person while changing clothes
-                controlnet_model="controlnet-openpose-sdxl-1.0",  # OpenPose model for person preservation
-                controlnet_module="openpose_full",  # Full body pose detection
-                controlnet_weight=1.0,  # Weight 1.0 for strong person preservation
-                controlnet_control_mode="ControlNet is more important",  # Strong control to preserve person
+                # ControlNet Unit 0: Pose lock (preserves full body pose)
+                controlnet_pose_enabled=True,
+                controlnet_pose_module="openpose_full",  # Full body pose detection
+                controlnet_pose_model="controlnet-openpose-sdxl",  # OpenPose model
+                controlnet_pose_weight=1.0,  # Weight 1.0 for strong pose preservation
+                controlnet_pose_control_mode="ControlNet is more important",  # Strong control to preserve person
+                # ControlNet Unit 1: Inpaint guidance (helps with clothing replacement)
+                controlnet_inpaint_enabled=True,
+                controlnet_inpaint_model="controlnet-inpaint-sdxl",  # Inpaint model for guidance
+                controlnet_inpaint_weight=1.0,  # Weight 1.0 for inpainting guidance
                 controlnet_pixel_perfect=True  # Pixel perfect mode
             )
             

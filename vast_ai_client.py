@@ -255,40 +255,48 @@ class VastAIClient:
         prompt: str,
         negative_prompt: str = "",
         mask: Optional[Image.Image] = None,
-        denoising_strength: float = 0.65,
+        denoising_strength: float = 0.30,
         steps: int = 25,
         cfg_scale: float = 5,
         sampler_name: str = "DPM++ SDE",
         width: int = 1024,
         height: int = 1024,
-        controlnet_enabled: bool = True,
-        controlnet_module: Optional[str] = "none",
-        controlnet_model: Optional[str] = "controlnet-inpaint-dreamer-sdxl",
-        controlnet_weight: float = 1.0,
-        controlnet_control_mode: str = "Balanced",
+        controlnet_pose_enabled: bool = True,
+        controlnet_pose_module: Optional[str] = "openpose_full",
+        controlnet_pose_model: Optional[str] = "controlnet-openpose-sdxl",
+        controlnet_pose_weight: float = 1.0,
+        controlnet_pose_control_mode: str = "ControlNet is more important",
+        controlnet_inpaint_enabled: bool = True,
+        controlnet_inpaint_model: Optional[str] = "controlnet-inpaint-sdxl",
+        controlnet_inpaint_weight: float = 1.0,
         controlnet_pixel_perfect: bool = True
     ) -> Image.Image:
         """
-        Generate image using Vast.ai img2img API with inpainting mask + ControlNet.
+        Generate image using Vast.ai img2img API with inpainting mask + dual ControlNet.
         
-        Uses img2img + ControlNet + Mask for precise clothing replacement.
+        Uses img2img + two ControlNet units + Mask for precise clothing replacement:
+        - Unit 0: OpenPose for pose lock (preserves full body)
+        - Unit 1: Inpaint for inpainting guidance (helps with clothing replacement)
         
         Args:
             image: Input PIL Image
             prompt: Positive prompt for generation
             negative_prompt: Negative prompt (what to avoid)
             mask: Mask image for inpainting (white=change, black=preserve)
-            denoising_strength: How much to change the image (0.0-1.0)
+            denoising_strength: How much to change the image (0.25-0.35 recommended)
             steps: Number of inference steps
             cfg_scale: Guidance scale (how closely to follow prompt)
             sampler_name: Sampler to use (e.g., "DPM++ SDE")
             width: Output image width
             height: Output image height
-            controlnet_enabled: Whether to use ControlNet
-            controlnet_module: ControlNet module name ("none" for inpaint models)
-            controlnet_model: ControlNet model name ("controlnet-inpaint-dreamer-sdxl")
-            controlnet_weight: ControlNet weight
-            controlnet_control_mode: Control mode ("Balanced" for best results)
+            controlnet_pose_enabled: Whether to use OpenPose ControlNet (Unit 0)
+            controlnet_pose_module: OpenPose module ("openpose_full")
+            controlnet_pose_model: OpenPose model ("controlnet-openpose-sdxl")
+            controlnet_pose_weight: OpenPose weight (1.0 recommended)
+            controlnet_pose_control_mode: OpenPose control mode ("ControlNet is more important")
+            controlnet_inpaint_enabled: Whether to use Inpaint ControlNet (Unit 1)
+            controlnet_inpaint_model: Inpaint model ("controlnet-inpaint-sdxl")
+            controlnet_inpaint_weight: Inpaint weight (1.0 recommended)
             controlnet_pixel_perfect: Enable pixel perfect mode
         
         Returns:
@@ -327,24 +335,42 @@ class VastAIClient:
                 "mask_blur": 8,  # Higher blur (8-12) for smoother, more natural edges
             }
             
-            # Add ControlNet using controlnet_units format
-            # This is the correct format for ControlNet in SD API
-            if controlnet_enabled and controlnet_model:
-                payload["controlnet_units"] = [
-                    {
-                        "enabled": True,
-                        "image": image_base64,  # Use original image for ControlNet
-                        "module": controlnet_module if controlnet_module else "none",
-                        "model": controlnet_model,
-                        "weight": controlnet_weight,
-                        "pixel_perfect": controlnet_pixel_perfect,
-                        "control_mode": controlnet_control_mode
-                    }
-                ]
-                logger.info(f"ControlNet enabled: {controlnet_model} / {controlnet_module}")
-                logger.info(f"ControlNet weight: {controlnet_weight}, control_mode: {controlnet_control_mode}, pixel_perfect: {controlnet_pixel_perfect}")
+            # Add ControlNet using controlnet_units format with TWO units:
+            # Unit 0: OpenPose for pose lock (preserves full body pose)
+            # Unit 1: Inpaint for inpainting guidance (helps with clothing replacement)
+            controlnet_units = []
+            
+            # ControlNet Unit 0: Pose lock (openpose_full)
+            if controlnet_pose_enabled and controlnet_pose_model:
+                controlnet_units.append({
+                    "enabled": True,
+                    "image": image_base64,  # Use original image for pose detection
+                    "module": controlnet_pose_module if controlnet_pose_module else "openpose_full",
+                    "model": controlnet_pose_model,
+                    "weight": controlnet_pose_weight,
+                    "pixel_perfect": controlnet_pixel_perfect,
+                    "control_mode": controlnet_pose_control_mode
+                })
+                logger.info(f"ControlNet Unit 0 (Pose lock): {controlnet_pose_model} / {controlnet_pose_module}, weight={controlnet_pose_weight}, mode={controlnet_pose_control_mode}")
+            
+            # ControlNet Unit 1: Inpaint guidance
+            if controlnet_inpaint_enabled and controlnet_inpaint_model:
+                controlnet_units.append({
+                    "enabled": True,
+                    "image": image_base64,  # Use original image for inpainting guidance
+                    "module": "inpaint",  # Inpaint preprocessor
+                    "model": controlnet_inpaint_model,
+                    "weight": controlnet_inpaint_weight,
+                    "pixel_perfect": controlnet_pixel_perfect,
+                    "control_mode": "Balanced"  # Balanced mode for inpainting
+                })
+                logger.info(f"ControlNet Unit 1 (Inpaint guidance): {controlnet_inpaint_model}, weight={controlnet_inpaint_weight}")
+            
+            if controlnet_units:
+                payload["controlnet_units"] = controlnet_units
+                logger.info(f"✅ Added {len(controlnet_units)} ControlNet unit(s)")
             else:
-                logger.warning("ControlNet is disabled")
+                logger.warning("⚠️  No ControlNet units enabled")
             
             # Send request to Vast.ai API with retry mechanism
             logger.info(f"Sending img2img request to {self.img2img_endpoint}")
