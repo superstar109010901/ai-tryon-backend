@@ -96,12 +96,13 @@ class ImageProcessor:
             if white_ratio < 0.05 or white_ratio > 0.40:
                 logger.warning(f"Mask white ratio ({white_ratio*100:.1f}%) seems unusual. Expected 10-30% for torso region.")
             
-            # Ensure top 40% is completely black (face/neck protection)
+            # Ensure top 25% is completely black (face/head protection only)
+            # Reduced from 40% to 25% to allow shirt collar/upper shirt area to be changed
             height = mask_array.shape[0]
-            face_protection = int(height * 0.40)
+            face_protection = int(height * 0.25)  # Only protect face/head, not shirt collar
             mask_array[:face_protection, :] = 0
             mask = Image.fromarray(mask_array, mode='L')
-            logger.info(f"Face/neck area (top {face_protection}px) forced to black")
+            logger.info(f"Face/head area (top {face_protection}px) forced to black - shirt collar area is now changeable")
             
             # Final verification: ensure mask has sufficient white pixels for shirt area
             final_white = np.sum(mask_array == 255)
@@ -359,14 +360,15 @@ class ImageProcessor:
         # This is critical - we only mark shirt area as white
         mask = Image.new("L", (width, height), 0)  # 0 = black = preserve
         
-        # CRITICAL: Face and neck protection zone (top 40% - MUST be black)
-        # Even ONE white pixel in face area will cause face changes
-        face_neck_bottom = int(height * 0.40)
+        # CRITICAL: Face and head protection zone (top 25% - MUST be black)
+        # Reduced from 40% to 25% to allow shirt collar and upper shirt to be changed
+        # Only protect face/head, not the shirt collar area
+        face_neck_bottom = int(height * 0.25)  # Only protect face/head area
         
         # CLOTHING REGION: Cover ALL clothes (shirt + pants)
-        # Shirt region: from below neck to waist/hips - EXPANDED for full coverage
-        shirt_top = int(height * 0.35)  # Start lower to catch full shirt (was 0.38)
-        shirt_bottom = int(height * 0.78)  # Extend lower to cover full shirt including untucked part (was 0.75)
+        # Shirt region: from below head to waist/hips - FULL coverage including collar
+        shirt_top = int(height * 0.25)  # Start right below face protection to catch shirt collar
+        shirt_bottom = int(height * 0.78)  # Extend lower to cover full shirt including untucked part
         
         # Pants/Trousers region: from waist to just above shoes
         pants_top = int(height * 0.70)  # Start at waist (overlaps with shirt bottom)
@@ -419,19 +421,20 @@ class ImageProcessor:
             fill=255  # White = SD can change this area (pants/trousers)
         )
         
-        # CRITICAL: Force face/neck area to be COMPLETELY BLACK
+        # CRITICAL: Force face/head area to be COMPLETELY BLACK
         # This MUST be done AFTER drawing shirt/pants to ensure face protection
-        # This is the most important step - even a few white pixels will change the face
+        # Only protect the actual face/head area (top 25%), not the shirt collar
         draw.rectangle(
             [(0, 0), (width, face_neck_bottom)],
-            fill=0  # Black = preserve face and neck (DO NOT CHANGE)
+            fill=0  # Black = preserve face and head only (DO NOT CHANGE)
         )
         
         # Re-draw shirt area AFTER face protection to ensure shirt mask is not lost
-        # This ensures shirt area (below face) remains white
+        # This ensures shirt area (below face/head) remains white, including collar area
+        # Shirt starts at 25% (right below face protection) to catch full shirt including collar
         draw.rectangle(
             [(chest_left, shirt_top), (chest_right, shirt_bottom)],
-            fill=255  # White = SD can change this area (FULL shirt)
+            fill=255  # White = SD can change this area (FULL shirt including collar)
         )
         draw.rectangle(
             [(shoulder_left, left_arm_top), (chest_left, left_arm_bottom)],
@@ -477,9 +480,10 @@ class ImageProcessor:
         
         logger.info(f"Generated clothing mask (shirt + pants):")
         logger.info(f"  - White pixels (clothing area): {white_pixels} ({white_pixels/total_pixels*100:.1f}%)")
-        logger.info(f"  - Face area white pixels: {np.sum(mask_array[:face_neck_bottom, :] == 255)} (should be 0)")
-        logger.info(f"  - Mask includes: Shirt (full), Pants/Trousers, Upper arms, Shoulder fabric")
-        logger.info(f"  - Mask excludes: Face (top {face_neck_bottom}px), Neck, Background, Shoes, Feet, Hands")
+        logger.info(f"  - Face/head area white pixels: {np.sum(mask_array[:face_neck_bottom, :] == 255)} (should be 0)")
+        logger.info(f"  - Mask includes: Shirt (FULL including collar), Pants/Trousers, Upper arms, Shoulder fabric")
+        logger.info(f"  - Mask excludes: Face/head (top {face_neck_bottom}px = {face_neck_bottom*100/height:.1f}%), Background, Shoes, Feet, Hands")
+        logger.info(f"  - Shirt mask: {shirt_top*100/height:.1f}% to {shirt_bottom*100/height:.1f}% of image height")
         
         mask = Image.fromarray(mask_array, mode='L')
         return mask
