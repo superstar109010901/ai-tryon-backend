@@ -175,16 +175,30 @@ async def download_image(filename: str):
     """
     Endpoint to download generated images.
     Frontend calls this to download the generated try-on images.
+    
+    Optimized for fast response with proper headers and streaming.
     """
     try:
         file_path = Path("temp_images") / filename
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Image not found")
         
+        # Determine content type based on file extension
+        content_type = "image/png"
+        if filename.lower().endswith('.jpg') or filename.lower().endswith('.jpeg'):
+            content_type = "image/jpeg"
+        elif filename.lower().endswith('.webp'):
+            content_type = "image/webp"
+        
+        # Use FileResponse with streaming for efficient file serving
         return FileResponse(
             path=str(file_path),
-            media_type="image/png",
-            filename=filename
+            media_type=content_type,
+            filename=filename,
+            headers={
+                "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                "Accept-Ranges": "bytes",  # Support range requests
+            }
         )
     except HTTPException:
         raise
