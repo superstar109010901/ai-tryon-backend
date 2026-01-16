@@ -23,12 +23,12 @@ from config import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Static prompt for clothing replacement
-# Clothes-only prompt - focuses only on the clothing
-STATIC_PROMPT = "plain white cotton shirt"
+# Static prompt for white clothing generation
+# Focus on white clothing that person is wearing
+STATIC_PROMPT = "person wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, same pose, same background, photorealistic, seamless integration, high detail"
 
-# Negative prompt - strong exclusion of face, hair, skin, body, identity
-NEGATIVE_PROMPT = "face, hair, skin, body, identity, person, head, neck, different face, face change, distorted face, new person, different person, changed identity, altered face, body deformation, extra limbs, bad anatomy, blur, low quality, face modification, original shirt, original color, gray, black, texture, pattern, logo, shadows"
+# Negative prompt - exclusion of unwanted elements
+NEGATIVE_PROMPT = "different person, face change, distorted face, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"
 
 
 
@@ -157,28 +157,35 @@ class ImageProcessor:
             except Exception as e:
                 logger.warning(f"Could not save debug mask: {e}")
             
-            # OPTION A: Segment + Color Transfer (GUARANTEED FIX)
-            # Does NOT use diffusion - uses color transfer to convert clothing to white
-            # Preserves entire person: face, body, pose, background
-            # Only changes clothing color (chroma/lightness), preserves texture
-            # Zero blur, zero body change, zero person replacement
-            logger.info("Applying Segment + Color Transfer method (OPTION A)...")
-            logger.info("Converting clothing to white using color transfer (preserves person, no diffusion)...")
+            # Generate white clothes using diffusion inpainting
+            # This creates realistic white clothing that the person is actually wearing
+            # Uses ControlNet to preserve person (face, body, pose) while generating white clothes
+            logger.info("Generating white clothes using diffusion inpainting...")
+            logger.info(f"Using prompt: {prompt}")
+            logger.info(f"Using negative prompt: {negative_prompt[:100]}...")
             
-            # Apply color transfer to convert clothing to white
-            # This method:
-            # - Does NOT regenerate pixels (no diffusion)
-            # - Keeps entire person intact (face, body, pose)
-            # - Preserves original texture and shadows
-            # - Changes only chroma/lightness (color transfer)
-            # - Guarantees white clothes without replacing person
-            generated_image = self.change_clothing_color_with_mask(
+            # Generate image with white clothing using img2img inpainting
+            # The mask determines which areas to replace (white = generate white clothes, black = preserve person)
+            # Uses ControlNet to preserve person structure while generating realistic white clothing
+            generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
-                mask=mask,  # Mask for color transfer (white = clothing area to change, black = preserve person)
-                target_color=(255, 255, 255)  # White color
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                mask=mask,  # Mask for inpainting (white = generate white clothes, black = preserve person)
+                denoising_strength=0.50,  # Moderate strength to generate white clothes while preserving person
+                steps=30,  # More steps for better quality white clothing
+                cfg_scale=7,  # Higher guidance to ensure white clothing generation
+                sampler_name="DPM++ SDE",  # High quality sampler
+                width=target_width,
+                height=target_height,
+                controlnet_pose_enabled=True,  # Preserve pose to keep person intact
+                controlnet_pose_weight=1.0,  # Strong pose preservation
+                controlnet_pose_control_mode="ControlNet is more important",  # Strong control
+                controlnet_inpaint_enabled=True,  # Use inpainting ControlNet for clothing generation
+                controlnet_inpaint_weight=0.6  # Moderate weight for clothing generation
             )
             
-            logger.info("✅ Color transfer completed successfully - white clothing applied (person preserved, no diffusion)")
+            logger.info("✅ White clothing generation completed successfully - person is now wearing white clothes")
             
             # Save generated image temporarily
             filename = f"generated_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}.png"
