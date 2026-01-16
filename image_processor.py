@@ -324,12 +324,9 @@ class ImageProcessor:
         # Set clothing areas to white (255)
         mask_array[final_clothing_mask] = 255
         
-        # Clean up: remove any white pixels near face/neck/shoulder area
-        # Lock face completely - mask must not touch neck, chin, jawline, or shoulders
-        # Leave clear gap between bottom of face and top of shirt
-        # Protect top 50% to ensure face, neck, chin, jawline, and shoulders are safe
-        face_protection_zone = int(height * 0.50)
-        mask_array[:face_protection_zone, :] = 0  # Force pure black in face/neck/shoulder area
+        # CRITICAL: Face protection is handled by detected face area (not fixed percentage)
+        # This function is called from create_clothing_mask_from_segmentation which handles face protection
+        # Do NOT add fixed percentage protection here - use detected face area instead
         
         # Clean edges: remove small white pixels that might be face/neck
         # Use morphological operations to clean up
@@ -348,9 +345,6 @@ class ImageProcessor:
             mask_pil = mask_pil.filter(ImageFilter.MaxFilter(5))   # Fill small holes
             mask_array = np.array(mask_pil)
         
-        # Ensure face/neck/shoulder area is completely black (double protection)
-        mask_array[:face_protection_zone, :] = 0
-        
         # Convert to pure black/white (no gray pixels) - STRICT mask
         # Threshold: anything > 127 becomes 255 (white), <= 127 becomes 0 (black)
         # This ensures pure white (255) for shirt, pure black (0) for everything else
@@ -364,14 +358,11 @@ class ImageProcessor:
         if white_pixel_ratio > 0.7:  # If more than 70% is white, likely inverted
             logger.warning(f"Mask appears inverted (white_pixel_ratio={white_pixel_ratio:.2f}). Inverting mask...")
             mask_array = np.where(mask_array == 255, 0, 255).astype(np.uint8)
-            # Re-protect face area after inversion
-            mask_array[:face_protection_zone, :] = 0
             white_pixel_ratio = np.sum(mask_array == 255) / mask_array.size
             logger.info(f"After inversion: white_pixel_ratio={white_pixel_ratio:.2f}")
         
-        # Ensure face/neck/shoulder area is pure black (triple protection)
-        # Even a few gray pixels lets the model "rewrite" the face
-        mask_array[:face_protection_zone, :] = 0
+        # CRITICAL: Face protection is handled by detected face area (not fixed percentage)
+        # This is applied in generate_clothing_mask_from_segmentation using detected face mask
         
         # Final verification: ensure mask is active and dominant
         # Shirt area must be pure white (255), everything else pure black (0)
@@ -392,7 +383,7 @@ class ImageProcessor:
         # This ensures SD only changes the exact clothing area, no gray pixels
         
         logger.info(f"Created mask from segmentation: {np.sum(mask_array > 127)} white pixels")
-        logger.info(f"Face area (top {face_protection_zone}px) is protected (black)")
+        logger.info("Face protection will be applied using detected face area (works for any position)")
         
         return mask
     
@@ -442,8 +433,10 @@ class ImageProcessor:
             face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(10))  # Increased from 5 to 10
             face_mask_array = np.array(face_mask_pil)
         
-        # Also protect top portion of image (head/face/neck region) - extra safety
-        face_mask_array[:int(face_mask_array.shape[0] * 0.10), :] = 255  # Top 40% is always protected
+        # CRITICAL: Do NOT add fixed percentage protection
+        # Face detection works on ENTIRE image (100% coverage)
+        # It can detect face at ANY position (top, middle, bottom)
+        # We trust the detection and use only detected face area
         
         logger.info(f"Face mask created: {np.sum(face_mask_array == 255)} white pixels ({np.sum(face_mask_array == 255)/face_mask_array.size*100:.1f}% of image)")
         
@@ -652,9 +645,11 @@ class ImageProcessor:
             # Also exclude skin tones and head region
             face_mask_seg = (r > 150) & (g > 150) & (b < r * 0.7) & (b < g * 0.7)
             
-            # Also exclude top portion of image (head/face region) - extra protection
-            head_region_mask = np.zeros((height, width), dtype=bool)
-            head_region_mask[:int(height * 0.10), :] = True  # Top 40% is head/face/neck region (increased from 35%)
+            # CRITICAL: Do NOT use fixed percentage for head region
+            # Face detection works on ENTIRE image and can detect face at ANY position
+            # We'll use detected face area instead of fixed percentage
+            # Create empty head region mask - face protection handled by detected face area
+            head_region_mask = np.zeros((height, width), dtype=bool)  # Empty - face detection handles this
             
             # FIX 2: Temporarily INCLUDE hands for upper-garment edits
             # Hands define garment ownership - excluding them causes "held object" hallucinations
@@ -741,34 +736,49 @@ class ImageProcessor:
             mask = Image.new("L", (width, height), 0)
             mask_array = np.array(mask)
         
-        # Create face protection mask
+        # CRITICAL: Create face protection mask from ENTIRE image detection
+        # Face detection works on 100% of image, so it can detect face at ANY position
         face_mask = None
         if face_detection is not None:
             try:
                 face_mask = self.create_face_mask_from_detection(face_detection, image)
-                logger.info("Using ControlNet face detection for face protection")
+                logger.info("✅ Using ControlNet face detection from ENTIRE image for face protection")
+                logger.info("   Face can be detected at ANY position (top, middle, bottom)")
             except Exception as e:
                 logger.warning(f"Failed to create face mask: {e}, using fallback")
                 face_mask = None
         
-        face_protection_fallback = int(height * 0.10) if face_mask is None else None  # Increased to 40% for better face/head/neck protection
+        # Fallback: Only use if face detection completely failed
+        # But this is less ideal - we prefer actual face detection
+        face_protection_fallback = int(height * 0.10) if face_mask is None else None
         
-        # Apply face protection to mask - CRITICAL: Must protect face completely
+        # CRITICAL: Apply face protection to mask - MUST protect detected face completely
+        # Face detection covers ENTIRE image, so it works regardless of face position
         if face_mask is not None:
             mask_array = np.array(mask)
             face_mask_array = np.array(face_mask)
             # Protect face area: set to 0 (black = preserve, don't change)
             # Very low threshold to protect ALL face pixels, including edges
-            mask_array[face_mask_array > 10] = 0  # Very low threshold (was 50) to protect all face pixels
+            # This works for face at ANY position (top, middle, bottom)
+            mask_array[face_mask_array > 5] = 0  # Very low threshold to protect all face pixels
             mask = Image.fromarray(mask_array, mode='L')
-            logger.info("Applied ControlNet face detection mask for face protection")
+            
+            # Verify face is protected
+            face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
+            if face_white_pixels > 0:
+                logger.error(f"⚠️  CRITICAL: {face_white_pixels} white pixels found in detected face area! Forcing to black...")
+                mask_array[face_mask_array > 5] = 0  # Force protect face
+                mask = Image.fromarray(mask_array, mode='L')
+            
+            logger.info("✅ Applied face detection mask from ENTIRE image - face protected regardless of position")
         else:
-            # Fallback: protect top 40% of image (increased from 30% to 40%)
+            # Fallback: protect top 10% of image (only if face detection failed)
             mask_array = np.array(mask)
-            face_protection_zone = int(height * 0.10)  # Top 40% for face/head/neck protection
+            face_protection_zone = int(height * 0.10)  # Top 10% for face/head protection (fallback only)
             mask_array[:face_protection_zone, :] = 0  # Black = preserve face
             mask = Image.fromarray(mask_array, mode='L')
-            logger.info(f"Using fallback face protection (top {face_protection_zone*100/height:.1f}%)")
+            logger.warning(f"⚠️  Using fallback face protection (top {face_protection_zone*100/height:.1f}%) - face detection failed")
+            logger.warning("   This may not work if face is not at top of image")
         
         # CRITICAL: Only use geometric fallback if person is detected
         # If person not detected, don't create large geometric mask (would create large shirt)
@@ -827,21 +837,28 @@ class ImageProcessor:
                 logger.info(f"✅ Masked lower body area on detected person (width {pants_left*100/width:.0f}%-{pants_right*100/width:.0f}%)")
             
             # CRITICAL: Re-apply face protection after geometric mask
-            # Always protect face/head area to preserve person
-            # CRITICAL: Always protect face/head area
+            # Use detected face area from ENTIRE image, not fixed percentage
             mask_array = np.array(mask)
-            face_protection_zone = int(height * 0.10)  # Top 10% - protect face/head
-            mask_array[:face_protection_zone, :] = 0  # Black = preserve face/head
             
             if face_mask is not None:
+                # Use detected face area - works regardless of face position
                 face_mask_array = np.array(face_mask)
-                mask_array[face_mask_array > 127] = 0
+                mask_array[face_mask_array > 5] = 0  # Protect all detected face pixels
                 mask = Image.fromarray(mask_array, mode='L')
-                logger.info("Re-applied face protection after geometric mask")
+                
+                # Verify face is still protected
+                face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
+                if face_white_pixels > 0:
+                    logger.error(f"⚠️  CRITICAL: {face_white_pixels} white pixels in face after geometric mask! Forcing protection...")
+                    mask_array[face_mask_array > 5] = 0  # Force protect
+                    mask = Image.fromarray(mask_array, mode='L')
+                
+                logger.info("✅ Re-applied face detection mask from ENTIRE image after geometric mask")
             elif face_protection_fallback:
+                # Fallback: only if face detection failed
                 mask_array[:face_protection_fallback, :] = 0
                 mask = Image.fromarray(mask_array, mode='L')
-                logger.info(f"Re-applied fallback face protection (top {face_protection_fallback*100/height:.0f}%) after geometric mask")
+                logger.warning(f"⚠️  Re-applied fallback face protection (top {face_protection_fallback*100/height:.0f}%) - face detection failed")
         
         # Final cleanup - balanced mask with moderate blur for smooth edges
         mask_array = np.array(mask)
@@ -856,16 +873,25 @@ class ImageProcessor:
         mask_array = np.where(mask_array > 100, 255, 0).astype(np.uint8)  # Balanced threshold for smooth edges
         
         # CRITICAL: Apply face protection BEFORE blur to ensure face is protected
+        # Use detected face area from ENTIRE image, not fixed percentage
         if face_mask is not None:
             face_mask_array = np.array(face_mask)
             # Protect face area aggressively: any pixel that might be face = black (preserve)
-            mask_array[face_mask_array > 5] = 0  # Very low threshold (was 30) to protect all face pixels
-            logger.info("Applied aggressive face protection before blur")
+            # This works for face at ANY position (top, middle, bottom)
+            mask_array[face_mask_array > 5] = 0  # Very low threshold to protect all face pixels
+            
+            # Verify face is protected
+            face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
+            if face_white_pixels > 0:
+                logger.error(f"⚠️  CRITICAL: {face_white_pixels} white pixels in face before blur! Forcing protection...")
+                mask_array[face_mask_array > 5] = 0  # Force protect
+            
+            logger.info("✅ Applied face detection mask from ENTIRE image before blur")
         else:
-            # Fallback: protect top 40% of image
+            # Fallback: only if face detection failed
             face_protection_zone = int(height * 0.10)
             mask_array[:face_protection_zone, :] = 0
-            logger.info(f"Applied fallback face protection (top {face_protection_zone*100/height:.1f}%)")
+            logger.warning(f"⚠️  Applied fallback face protection (top {face_protection_zone*100/height:.1f}%) - face detection failed")
         
         # Apply moderate edge smoothing (very light blur) to prevent hard edges
         # But NOT too much blur - that creates the blurred rectangle overlay artifact
