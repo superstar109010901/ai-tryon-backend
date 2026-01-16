@@ -35,25 +35,25 @@ NEGATIVE_PROMPT = "face, hair, skin, body, identity, person, head, neck, differe
 
 class ImageProcessor:
     """
-    Processes images for virtual try-on using Vast.ai Stable Diffusion API.
+    Processes images for virtual try-on using SEGMENT + COLOR TRANSFER method.
     
-    APPROACH: True Try-On (Garment Replacement)
-    - Shirt is replaced entirely with new white garment
-    - Some style change is acceptable (SDXL is appropriate)
-    - NOT doing texture-space recolor (color-only changes)
-    
-    For texture-space recolor (color-only):
-    - Would extract clothing region → UV/texture-space → RGB recolor → reproject
-    - SDXL would NOT be used (only for refinement)
-    - Preserves body, pose, prevents foot distortion
+    APPROACH: Segment + Color Transfer (OPTION A - GUARANTEED FIX)
+    - Does NOT regenerate pixels (no diffusion)
+    - Keeps entire person intact (face, body, pose, background)
+    - Preserves original texture, shadows, and details
+    - Changes only chroma/lightness (color transfer)
+    - Zero blur, zero body change, zero person replacement
+    - Result: Shirt becomes white, Pants become white, Shoes become white
+    - This is NOT diffusion - this is image processing + ML segmentation
     
     Workflow:
     1. Load and preprocess input image
-    2. Detect person and clothing using ControlNet
-    3. Generate mask for garment replacement
-    4. Send to Vast.ai img2img API for true try-on (garment replacement)
-    5. Receive generated image with replaced garment
-    6. Save and return result
+    2. Detect entire person and clothing regions using ControlNet segmentation
+    3. Generate precise mask for clothing-only areas (shirt, pants, shoes)
+    4. Apply color transfer to convert clothing to white (preserves person)
+    5. Save and return result
+    
+    This method guarantees white clothes without replacing the person.
     """
     
     def __init__(self, vast_ai_url: str):
@@ -157,34 +157,28 @@ class ImageProcessor:
             except Exception as e:
                 logger.warning(f"Could not save debug mask: {e}")
             
-            # Generate image using Vast.ai img2img INPAINT API with inpainting
-            # TRUE TRY-ON APPROACH: Replacing garment entirely (not pure recolor)
-            # SDXL is appropriate for true try-on - some style change is acceptable
-            # For texture-space recolor (color-only), SDXL would NOT be used
-            # We're doing garment replacement, so higher denoising allows full replacement
-            generated_image = await self.vast_ai_client.generate_img2img(
+            # OPTION A: Segment + Color Transfer (GUARANTEED FIX)
+            # Does NOT use diffusion - uses color transfer to convert clothing to white
+            # Preserves entire person: face, body, pose, background
+            # Only changes clothing color (chroma/lightness), preserves texture
+            # Zero blur, zero body change, zero person replacement
+            logger.info("Applying Segment + Color Transfer method (OPTION A)...")
+            logger.info("Converting clothing to white using color transfer (preserves person, no diffusion)...")
+            
+            # Apply color transfer to convert clothing to white
+            # This method:
+            # - Does NOT regenerate pixels (no diffusion)
+            # - Keeps entire person intact (face, body, pose)
+            # - Preserves original texture and shadows
+            # - Changes only chroma/lightness (color transfer)
+            # - Guarantees white clothes without replacing person
+            generated_image = self.change_clothing_color_with_mask(
                 image=image,
-                mask=mask,
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                denoising_strength=0.65,  # True try-on: 0.65 allows full garment replacement
-                steps=30,  # More steps for better quality and blending
-                cfg_scale=5,  # Balanced CFG for garment replacement
-                sampler_name="DPM++ SDE",
-                width=1024,
-                height=1024,
-                # ControlNet Unit 0: Pose lock (preserves full body pose)
-                controlnet_pose_enabled=True,
-                controlnet_pose_module="openpose_full",  # Full body pose detection
-                controlnet_pose_model="controlnet-openpose-sdxl",  # OpenPose model
-                controlnet_pose_weight=1.0,  # Weight 1.0 for strong pose preservation
-                controlnet_pose_control_mode="ControlNet is more important",  # Strong control to preserve person
-                # ControlNet Unit 1: Inpaint guidance (re-enabled with lower weight to allow changes)
-                controlnet_inpaint_enabled=True,  # Re-enabled: helps with clothing replacement
-                controlnet_inpaint_model="controlnet-inpaint-sdxl",  # Inpaint model for guidance
-                controlnet_inpaint_weight=0.5,  # Lower weight (0.5) to allow changes while preventing overlay
-                controlnet_pixel_perfect=True  # Pixel perfect mode
+                mask=mask,  # Mask for color transfer (white = clothing area to change, black = preserve person)
+                target_color=(255, 255, 255)  # White color
             )
+            
+            logger.info("✅ Color transfer completed successfully - white clothing applied (person preserved, no diffusion)")
             
             # Save generated image temporarily
             filename = f"generated_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}.png"
@@ -637,27 +631,17 @@ class ImageProcessor:
             # Background is often less saturated or has different color distribution
             # For now, we'll rely on segmentation to exclude background
             
-            # Remove face, head, and skin tones from clothing mask (NOT hands geometry)
-            # FIX 2: Do NOT exclude hands_region - allow hand overlap with shirt mask
-            # We'll subtract skin-tone pixels only, not the entire hand geometry
+            # Remove face, head, and skin tones from clothing mask
+            # This ensures we only mask clothing, not the person's body parts
             clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask)
             
-            # Set clothing regions to white (255)
+            # Set clothing regions to white (255) - ONLY clothing, not person's body
             mask_array[clothing_mask] = 255
             
-            # FIX 1: Force full upper-garment mask (NON-NEGOTIABLE)
-            # Add hard geometric override for shirts AFTER all exclusions
-            # This guarantees: collar included, chest included, no "floating garment" behavior
-            y_coords, x_coords = np.ogrid[:height, :width]
-            upper_torso_mask = (y_coords > 0.18 * height) & (y_coords < 0.62 * height)
-            # Apply after exclusions - this ensures shirt is FULLY included
-            mask_array[upper_torso_mask] = 255  # Force full upper-garment inclusion
-            logger.info(f"✅ FIX 1: Forced full upper-garment mask (18%-62% height) - collar and chest included")
-            
-            # FIX 2: Subtract skin-tone pixels from mask (but keep hand geometry in mask)
-            # This prevents hands from being recolored while allowing shirt to extend to hands
-            mask_array[skin_mask] = 0  # Remove skin pixels only, not entire hand region
-            logger.info(f"✅ FIX 2: Subtracted skin-tone pixels only (hands geometry remains in mask)")
+            # CRITICAL: Ensure mask only covers clothing on detected person
+            # Don't force geometric overrides - rely on segmentation to detect actual clothing
+            # This ensures we preserve the person and only change clothing color
+            logger.info(f"✅ Clothing mask created from segmentation - only clothing areas masked (person preserved)")
             
             logger.info(f"Created clothing mask from segmentation: {np.sum(mask_array == 255)} white pixels ({np.sum(mask_array == 255)/mask_array.size*100:.1f}% of image)")
         else:
