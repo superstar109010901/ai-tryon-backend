@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Static prompt for white clothing generation
 # Focus on white clothing that person is wearing
-STATIC_PROMPT = "person wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, same pose, same background, photorealistic, seamless integration, high detail"
+STATIC_PROMPT = "man wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, same face, same body, same pose, same background, person visible, photorealistic, seamless integration, high detail"
 
 # Negative prompt - exclusion of unwanted elements
 NEGATIVE_PROMPT = "different person, face change, distorted face, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"
@@ -108,13 +108,41 @@ class ImageProcessor:
             else:
                 logger.warning("⚠️  Segmentation failed - will use geometric mask")
             
-            # Step 2: Generate clothing mask based on detected clothing
-            # Only mask clothing that actually exists in the image
-            logger.info("Generating clothing mask from detected clothing...")
+            # Step 2: Verify person detection before generating mask
+            # CRITICAL: Must detect person first, then extract clothing from person
+            person_detected = False
+            if segmentation_map is not None:
+                # Check if segmentation actually detected a person (not just background)
+                seg_array = np.array(segmentation_map.resize((1024, 1024), Image.Resampling.LANCZOS))
+                if len(seg_array.shape) == 3:
+                    # Check for person-like colors (not just background)
+                    r, g, b = seg_array[:, :, 0], seg_array[:, :, 1], seg_array[:, :, 2]
+                    # Person typically has: shirt (red/pink), pants (blue), face (yellow/orange)
+                    person_pixels = np.sum(
+                        ((r > 100) & (r > g * 0.7) & (r > b * 0.7)) |  # Shirt
+                        ((b > 100) & (b > r * 0.7) & (b > g * 0.7)) |  # Pants
+                        ((r > 150) & (g > 150) & (b < r * 0.7))  # Face
+                    )
+                    person_ratio = person_pixels / seg_array.size
+                    if person_ratio > 0.10:  # At least 10% of image should be person
+                        person_detected = True
+                        logger.info(f"✅ Person detected in segmentation ({person_ratio*100:.1f}% of image)")
+                    else:
+                        logger.warning(f"⚠️  Person detection weak ({person_ratio*100:.1f}% of image) - may need fallback")
+                else:
+                    person_detected = True  # Assume person detected if grayscale
+            
+            if not person_detected:
+                logger.warning("⚠️  Person not clearly detected - will use conservative mask")
+            
+            # Step 3: Generate clothing mask based on detected clothing
+            # CRITICAL: Only mask clothing on detected person, not large geometric shapes
+            logger.info("Generating clothing mask from detected clothing (person-first approach)...")
             mask, clothing_items = self.generate_clothing_mask_from_segmentation(
                 image, 
                 face_detection, 
-                segmentation_map
+                segmentation_map,
+                person_detected=person_detected  # Pass person detection status
             )
             
             # Step 3: Update prompt based on detected clothing
@@ -665,16 +693,21 @@ class ImageProcessor:
         self, 
         image: Image.Image, 
         face_detection: Optional[Image.Image] = None,
-        segmentation_map: Optional[Image.Image] = None
+        segmentation_map: Optional[Image.Image] = None,
+        person_detected: bool = True
     ) -> Tuple[Image.Image, Dict[str, bool]]:
         """
         Generate clothing mask based on detected clothing from segmentation.
-        Uses AI segmentation to detect ALL clothing regions across entire image.
+        APPROACH: Detect entire person first, then extract ONLY clothing regions from person.
+        
+        CRITICAL: Only masks clothing on detected person, not large geometric shapes.
+        This ensures person is preserved and only clothing is changed.
         
         Args:
             image: Input PIL Image
             face_detection: Face detection map from ControlNet (optional)
             segmentation_map: Segmentation map from ControlNet (optional)
+            person_detected: Whether person was detected in segmentation (default: True)
         
         Returns:
             Tuple of (mask Image, clothing_items dict)
@@ -737,54 +770,78 @@ class ImageProcessor:
             mask = Image.fromarray(mask_array, mode='L')
             logger.info(f"Using fallback face protection (top {face_protection_zone*100/height:.1f}%)")
         
-        # If segmentation mask is too small, fallback to geometric mask
+        # CRITICAL: Only use geometric fallback if person is detected
+        # If person not detected, don't create large geometric mask (would create large shirt)
         mask_array = np.array(mask)
         white_ratio = np.sum(mask_array == 255) / mask_array.size
+        
+        # Only use geometric fallback if person is detected AND mask is too small
+        use_geometric_fallback = False
         if white_ratio < 0.05:  # Less than 5% white pixels - mask might be too small
-            logger.warning(f"Segmentation mask too small ({white_ratio*100:.1f}%), using geometric mask as fallback")
+            if person_detected:
+                logger.warning(f"Segmentation mask too small ({white_ratio*100:.1f}%), using conservative geometric mask (person detected)")
+                use_geometric_fallback = True
+            else:
+                logger.error("⚠️  Person not detected AND mask too small - cannot create mask safely")
+                logger.error("   Returning minimal mask to avoid creating large shirt")
+                # Return minimal mask - don't create large geometric shapes
+                mask = Image.fromarray(mask_array, mode='L')
+                return mask, clothing_items
+        
+        if use_geometric_fallback:
             draw = ImageDraw.Draw(mask)
             
-            # Use geometric mask to cover ENTIRE clothing (shirt + pants) areas
+            # CRITICAL: Only mask clothing on detected person, not large geometric shapes
+            # Use conservative geometric mask that follows person's body shape
+            # Don't create large shirt - only mask actual clothing area on person
             if clothing_items.get('has_shirt', True):
-                shirt_top = int(height * 0.10)
-                shirt_bottom = int(height * 0.80)  # Extend to cover full shirt including lower part
-                chest_left = int(width * 0.05)
-                chest_right = int(width * 0.95)
-                shoulder_left = int(width * 0.00)
-                shoulder_right = int(width * 1.00)
+                # Conservative shirt mask - only covers torso area, not entire image
+                # This prevents creating a large shirt instead of detecting person
+                shirt_top = int(height * 0.15)  # Start below face (15% from top)
+                shirt_bottom = int(height * 0.70)  # Stop at waist (70% from top)
+                # Narrower width to follow person's body, not entire image width
+                chest_left = int(width * 0.20)  # 20% from left (narrower - follows person)
+                chest_right = int(width * 0.80)  # 80% from left (narrower - follows person)
                 
+                # Only mask torso area - don't include full width or arms
+                # This ensures we only mask clothing on person, not create large shirt
                 draw.rectangle([(chest_left, shirt_top), (chest_right, shirt_bottom)], fill=255)
-                draw.rectangle([(shoulder_left, shirt_top), (chest_left, shirt_bottom)], fill=255)
-                draw.rectangle([(chest_right, shirt_top), (shoulder_right, shirt_bottom)], fill=255)
-                logger.info("Masked shirt area (entire upper body)")
+                logger.info(f"✅ Masked shirt area on detected person (from {shirt_top*100/height:.0f}% to {shirt_bottom*100/height:.0f}%, width {chest_left*100/width:.0f}%-{chest_right*100/width:.0f}%)")
             
             # INCLUDE pants in mask - change entire clothing to white
+            # Use narrower width to follow person's body, not entire image
             if clothing_items.get('has_pants', False):
                 pants_top = int(height * 0.65)
                 pants_bottom = int(height * 0.95)  # Cover full pants area
-                pants_left = int(width * 0.15)
-                pants_right = int(width * 0.85)
+                pants_left = int(width * 0.20)  # Narrower to follow person (was 0.15)
+                pants_right = int(width * 0.80)  # Narrower to follow person (was 0.85)
                 draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
-                logger.info("Masked pants area (entire lower body)")
+                logger.info(f"✅ Masked pants area on detected person (width {pants_left*100/width:.0f}%-{pants_right*100/width:.0f}%)")
             else:
-                # Even if pants not detected, cover lower body area to ensure full clothing coverage
+                # Even if pants not detected, cover lower body area with narrow width
                 pants_top = int(height * 0.70)
                 pants_bottom = int(height * 0.92)
-                pants_left = int(width * 0.20)
-                pants_right = int(width * 0.80)
+                pants_left = int(width * 0.25)  # Narrower to follow person (was 0.20)
+                pants_right = int(width * 0.75)  # Narrower to follow person (was 0.80)
                 draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
-                logger.info("Masked lower body area (pants region)")
+                logger.info(f"✅ Masked lower body area on detected person (width {pants_left*100/width:.0f}%-{pants_right*100/width:.0f}%)")
             
-            # Re-apply face protection after geometric mask
+            # CRITICAL: Re-apply face protection after geometric mask
+            # Always protect face/head area to preserve person
+            # CRITICAL: Always protect face/head area
+            mask_array = np.array(mask)
+            face_protection_zone = int(height * 0.10)  # Top 10% - protect face/head
+            mask_array[:face_protection_zone, :] = 0  # Black = preserve face/head
+            
             if face_mask is not None:
-                mask_array = np.array(mask)
                 face_mask_array = np.array(face_mask)
                 mask_array[face_mask_array > 127] = 0
                 mask = Image.fromarray(mask_array, mode='L')
+                logger.info("Re-applied face protection after geometric mask")
             elif face_protection_fallback:
-                mask_array = np.array(mask)
                 mask_array[:face_protection_fallback, :] = 0
                 mask = Image.fromarray(mask_array, mode='L')
+                logger.info(f"Re-applied fallback face protection (top {face_protection_fallback*100/height:.0f}%) after geometric mask")
         
         # Final cleanup - balanced mask with moderate blur for smooth edges
         mask_array = np.array(mask)
