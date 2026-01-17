@@ -193,6 +193,7 @@ class ImageProcessor:
             logger.info(f"Using negative prompt: {negative_prompt[:100]}...")
             
             # CRITICAL: Final verification - ensure face is NEVER in mask
+            # This includes faces in body area and ring-shaped detections
             # Double-check that face area has ZERO white pixels
             # BUT: Don't remove too much - we need clothing area to remain white
             mask_array_final = np.array(mask)
@@ -202,18 +203,20 @@ class ImageProcessor:
                 try:
                     face_mask_final = self.create_face_mask_from_detection(face_detection, image)
                     face_mask_array_final = np.array(face_mask_final)
+                    # Check for white pixels in entire face region (including ring shapes)
                     face_white_pixels_final = np.sum((mask_array_final == 255) & (face_mask_array_final > 5))
                     if face_white_pixels_final > 0:
-                        logger.warning(f"⚠️  {face_white_pixels_final} white pixels in face area before generation - removing ONLY face area")
+                        logger.warning(f"⚠️  {face_white_pixels_final} white pixels in face area before generation (including ring shapes) - removing ONLY face area")
                         # Only remove face area, not entire top region
-                        mask_array_final[face_mask_array_final > 5] = 0  # Force protect face
+                        # This protects entire face region including ring shapes anywhere in image
+                        mask_array_final[face_mask_array_final > 5] = 0  # Force protect entire face region (including ring)
                         mask = Image.fromarray(mask_array_final, mode='L')
                         white_after_face_check = np.sum(mask_array_final == 255)
-                        logger.info(f"✅ Face area protected: {white_before_face_check} -> {white_after_face_check} white pixels remaining")
+                        logger.info(f"✅ Face area protected (including ring shapes): {white_before_face_check} -> {white_after_face_check} white pixels remaining")
                         if white_after_face_check < white_before_face_check * 0.5:
                             logger.warning(f"⚠️  Face protection removed {white_before_face_check - white_after_face_check} pixels - mask might be too small now")
                     else:
-                        logger.info("✅ Face verification passed - no white pixels in face area")
+                        logger.info("✅ Face verification passed - no white pixels in face area (including ring shapes)")
                 except Exception as e:
                     logger.warning(f"Could not verify face protection: {e}")
             
@@ -440,30 +443,63 @@ class ImageProcessor:
         else:
             detection_gray = detection_array
         
-        # Threshold: bright areas are likely face
-        # Face detection maps usually have high values where face is detected
-        # Use lower percentile to catch more face area
-        threshold = np.percentile(detection_gray, 50)  # Top 50% brightest = face area (was 70%, more aggressive)
+        # CRITICAL: Face detection can be anywhere in image (top, middle, bottom, body area)
+        # Face detection can also be ring-shaped - we need to protect the ENTIRE detected region
+        
+        # Method 1: Use adaptive threshold to catch face regions (including ring shapes)
+        # Lower threshold to catch more of the detection (ring shapes often have varying intensities)
+        threshold = np.percentile(detection_gray, 40)  # Lower threshold (40th percentile) to catch ring shapes
         face_mask_array = (detection_gray > threshold).astype(np.uint8) * 255
         
-        # Dilate the mask more aggressively to ensure full face, neck, and head coverage
+        # Method 2: Find connected components to detect all face regions (including rings)
+        # This ensures we catch face detections anywhere in the image
         try:
             from scipy import ndimage
-            # Larger dilation structure for better coverage
-            face_mask_array = ndimage.binary_dilation(face_mask_array > 127, structure=np.ones((10, 10))).astype(np.uint8) * 255  # Increased from 5x5 to 10x10
+            # Find all connected components (face regions)
+            labeled_array, num_features = ndimage.label(face_mask_array > 127)
+            
+            # If we found face regions, expand each one to ensure full coverage
+            if num_features > 0:
+                # For each detected face region, create a bounding box and fill it
+                # This ensures ring shapes are fully covered
+                expanded_mask = np.zeros_like(face_mask_array)
+                for i in range(1, num_features + 1):
+                    # Get coordinates of this face region
+                    face_region = (labeled_array == i)
+                    coords = np.where(face_region)
+                    if len(coords[0]) > 0:
+                        # Get bounding box of this face region
+                        min_row, max_row = coords[0].min(), coords[0].max()
+                        min_col, max_col = coords[1].min(), coords[1].max()
+                        # Add padding to ensure full coverage (especially for ring shapes)
+                        padding = 15  # Pixels of padding around detected face
+                        min_row = max(0, min_row - padding)
+                        max_row = min(height, max_row + padding)
+                        min_col = max(0, min_col - padding)
+                        max_col = min(width, max_col + padding)
+                        # Fill the entire bounding box (protects ring shapes fully)
+                        expanded_mask[min_row:max_row, min_col:max_col] = 255
+                
+                # Combine with original mask
+                face_mask_array = np.maximum(face_mask_array, expanded_mask)
+            
+            # Dilate the mask aggressively to ensure full face, neck, and head coverage
+            # Larger dilation to cover entire ring shapes
+            face_mask_array = ndimage.binary_dilation(face_mask_array > 127, structure=np.ones((20, 20))).astype(np.uint8) * 255  # Increased to 20x20 for ring shapes
         except ImportError:
-            # If scipy not available, use PIL filters
+            # If scipy not available, use PIL filters with larger radius
             from PIL import ImageFilter
             face_mask_pil = Image.fromarray(face_mask_array, mode='L')
-            face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(10))  # Increased from 5 to 10
+            # Use larger filter to cover ring shapes
+            face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(20))  # Increased to 20 for ring shapes
             face_mask_array = np.array(face_mask_pil)
         
-        # CRITICAL: Do NOT add fixed percentage protection
-        # Face detection works on ENTIRE image (100% coverage)
-        # It can detect face at ANY position (top, middle, bottom)
-        # We trust the detection and use only detected face area
+        # CRITICAL: Face detection works on ENTIRE image (100% coverage)
+        # It can detect face at ANY position (top, middle, bottom, body area)
+        # Ring-shaped detections are now fully protected by bounding box + dilation
+        # We trust the detection and protect the ENTIRE detected region
         
-        logger.info(f"Face mask created: {np.sum(face_mask_array == 255)} white pixels ({np.sum(face_mask_array == 255)/face_mask_array.size*100:.1f}% of image)")
+        logger.info(f"Face mask created (works anywhere in image, handles ring shapes): {np.sum(face_mask_array == 255)} white pixels ({np.sum(face_mask_array == 255)/face_mask_array.size*100:.1f}% of image)")
         
         return Image.fromarray(face_mask_array, mode='L')
     
@@ -803,31 +839,35 @@ class ImageProcessor:
         
         # CRITICAL: Apply face protection to mask - MUST protect detected face completely
         # Face detection covers ENTIRE image, so it works regardless of face position
+        # This includes faces in body area and ring-shaped detections
         if face_mask is not None:
             mask_array = np.array(mask)
             face_mask_array = np.array(face_mask)
-            # Protect face area: set to 0 (black = preserve, don't change)
-            # Very low threshold to protect ALL face pixels, including edges
-            # This works for face at ANY position (top, middle, bottom)
-            mask_array[face_mask_array > 5] = 0  # Very low threshold to protect all face pixels
+            
+            # CRITICAL: Protect ENTIRE face detection area (including ring shapes)
+            # Use very low threshold to protect ALL face pixels, including ring edges
+            # This works for face at ANY position (top, middle, bottom, body area)
+            # Ring shapes are fully protected by the expanded bounding box + dilation
+            mask_array[face_mask_array > 5] = 0  # Very low threshold to protect all face pixels (including ring edges)
             mask = Image.fromarray(mask_array, mode='L')
             
             # CRITICAL: Verify face is protected - MUST have ZERO white pixels in face
+            # This includes ring-shaped detections anywhere in the image
             face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
             if face_white_pixels > 0:
-                logger.error(f"❌ CRITICAL ERROR: {face_white_pixels} white pixels found in detected face area! Forcing to black...")
-                mask_array[face_mask_array > 5] = 0  # Force protect face
+                logger.error(f"❌ CRITICAL ERROR: {face_white_pixels} white pixels found in detected face area (including ring shapes)! Forcing to black...")
+                mask_array[face_mask_array > 5] = 0  # Force protect entire face region (including ring)
                 # Verify again
                 face_white_pixels_after = np.sum((mask_array == 255) & (face_mask_array > 5))
                 if face_white_pixels_after == 0:
-                    logger.info("✅ Face protection verified - face area is now completely black")
+                    logger.info("✅ Face protection verified - entire face area (including ring) is now completely black")
                 else:
                     logger.error(f"❌ ERROR: Still {face_white_pixels_after} white pixels in face after forced protection!")
                 mask = Image.fromarray(mask_array, mode='L')
             else:
-                logger.info("✅ Face protection verified - no white pixels in face area")
+                logger.info("✅ Face protection verified - no white pixels in face area (including ring shapes)")
             
-            logger.info("✅ Applied face detection mask from ENTIRE image - face protected regardless of position")
+            logger.info("✅ Applied face detection mask from ENTIRE image - face protected regardless of position (top/middle/bottom/body area, handles ring shapes)")
         else:
             # Fallback: protect top 20% of image (only if face detection failed)
             mask_array = np.array(mask)
@@ -963,8 +1003,9 @@ class ImageProcessor:
         if face_mask is not None:
             face_mask_array = np.array(face_mask)
             # Final aggressive protection: any face pixel = black (0)
-            mask_array[face_mask_array > 5] = 0  # Very low threshold (was 20) to ensure complete face protection
-            logger.info("Applied final aggressive face protection after blur")
+            # This protects entire face region including ring shapes anywhere in image
+            mask_array[face_mask_array > 5] = 0  # Very low threshold to ensure complete face protection (including ring edges)
+            logger.info("Applied final aggressive face protection after blur (protects entire face region including ring shapes)")
         else:
             # Final fallback: protect top 20% of image
             face_protection_zone = int(height * 0.20)  # 20% face protection
