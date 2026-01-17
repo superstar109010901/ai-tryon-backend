@@ -204,12 +204,14 @@ class ImageProcessor:
                     face_mask_final = self.create_face_mask_from_detection(face_detection, image)
                     face_mask_array_final = np.array(face_mask_final)
                     # Check for white pixels in entire face region (including ring shapes)
-                    face_white_pixels_final = np.sum((mask_array_final == 255) & (face_mask_array_final > 5))
+                    # Use smooth threshold (30) to match the protection threshold
+                    face_white_pixels_final = np.sum((mask_array_final == 255) & (face_mask_array_final > 30))
                     if face_white_pixels_final > 0:
                         logger.warning(f"⚠️  {face_white_pixels_final} white pixels in face area before generation (including ring shapes) - removing ONLY face area")
                         # Only remove face area, not entire top region
                         # This protects entire face region including ring shapes anywhere in image
-                        mask_array_final[face_mask_array_final > 5] = 0  # Force protect entire face region (including ring)
+                        # Smooth edges ensure natural transitions
+                        mask_array_final[face_mask_array_final > 30] = 0  # Force protect entire face region (including ring) with smooth threshold
                         mask = Image.fromarray(mask_array_final, mode='L')
                         white_after_face_check = np.sum(mask_array_final == 255)
                         logger.info(f"✅ Face area protected (including ring shapes): {white_before_face_check} -> {white_after_face_check} white pixels remaining")
@@ -494,12 +496,34 @@ class ImageProcessor:
             face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(20))  # Increased to 20 for ring shapes
             face_mask_array = np.array(face_mask_pil)
         
+        # CRITICAL: Apply Gaussian blur to smooth face mask edges
+        # This creates smooth transitions instead of hard edges
+        from PIL import ImageFilter
+        face_mask_pil = Image.fromarray(face_mask_array, mode='L')
+        # Apply moderate Gaussian blur for smooth edges (radius=3 for smooth transitions)
+        face_mask_pil = face_mask_pil.filter(ImageFilter.GaussianBlur(radius=3))
+        face_mask_array = np.array(face_mask_pil)
+        
+        # Re-threshold with softer transition to maintain smooth edges
+        # Use lower threshold to keep smooth edges (softens the mask)
+        face_mask_array = np.where(face_mask_array > 50, 255, 0).astype(np.uint8)  # Lower threshold (50 instead of 127) for smoother edges
+        
+        # Optional: Apply one more light blur for even smoother transitions
+        face_mask_pil = Image.fromarray(face_mask_array, mode='L')
+        face_mask_pil = face_mask_pil.filter(ImageFilter.GaussianBlur(radius=2))  # Light blur for extra smoothness
+        face_mask_array = np.array(face_mask_pil)
+        
+        # Final soft threshold to maintain smooth gradient at edges
+        # Keep some gradient for smoother transitions
+        face_mask_array = np.clip(face_mask_array, 0, 255).astype(np.uint8)
+        
         # CRITICAL: Face detection works on ENTIRE image (100% coverage)
         # It can detect face at ANY position (top, middle, bottom, body area)
         # Ring-shaped detections are now fully protected by bounding box + dilation
-        # We trust the detection and protect the ENTIRE detected region
+        # Smooth edges created with Gaussian blur for natural transitions
+        # We trust the detection and protect the ENTIRE detected region with smooth edges
         
-        logger.info(f"Face mask created (works anywhere in image, handles ring shapes): {np.sum(face_mask_array == 255)} white pixels ({np.sum(face_mask_array == 255)/face_mask_array.size*100:.1f}% of image)")
+        logger.info(f"Face mask created (smooth edges, works anywhere in image, handles ring shapes): {np.sum(face_mask_array > 127)} white pixels ({np.sum(face_mask_array > 127)/face_mask_array.size*100:.1f}% of image)")
         
         return Image.fromarray(face_mask_array, mode='L')
     
@@ -726,11 +750,13 @@ class ImageProcessor:
             
             # Method 1: Exclude edge regions (background is often at edges)
             edge_mask = np.zeros((height, width), dtype=bool)
-            edge_threshold = 0.05  # 5% from edges
+            edge_threshold = 0.03  # 3% from edges (reduced from 5%)
             edge_mask[:int(height * edge_threshold), :] = True  # Top edge
-            edge_mask[int(height * (1 - edge_threshold)):, :] = True  # Bottom edge
+            # REDUCED: Only exclude very bottom (98-100%) to allow waist/hips/trousers area to change
+            edge_mask[int(height * 0.98):, :] = True  # Very bottom only (was 95% onwards)
             edge_mask[:, :int(width * edge_threshold)] = True  # Left edge
-            edge_mask[:, int(width * (1 - edge_threshold)):] = True  # Right edge
+            # REDUCED: Only exclude very right edge (98-100%) to allow hands area to change
+            edge_mask[:, int(width * 0.98):] = True  # Very right edge only (was 95% onwards)
             
             # Method 2: Exclude low-saturation areas (background often less saturated)
             # Calculate saturation: max(R,G,B) - min(R,G,B)
@@ -746,9 +772,11 @@ class ImageProcessor:
             # Combine background detection methods
             background_mask = edge_mask | (low_saturation_mask & not_clothing_color)
             
-            # Remove face, head, skin tones, AND background from clothing mask
+            # Remove face, head, AND background from clothing mask
+            # NOTE: Skin mask exclusion removed to allow hands/arms area to change when in clothing region
             # This ensures we only mask clothing, not the person's body parts or background
-            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask) & (~background_mask)
+            # But allows hands/arms to be included if they're in the clothing area (as user requested)
+            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~background_mask)
             
             # Set clothing regions to white (255) - ONLY clothing, not person's body
             mask_array[clothing_mask] = 255
@@ -845,27 +873,29 @@ class ImageProcessor:
             face_mask_array = np.array(face_mask)
             
             # CRITICAL: Protect ENTIRE face detection area (including ring shapes)
-            # Use very low threshold to protect ALL face pixels, including ring edges
+            # Use smooth threshold to protect ALL face pixels, including ring edges and smooth transitions
             # This works for face at ANY position (top, middle, bottom, body area)
-            # Ring shapes are fully protected by the expanded bounding box + dilation
-            mask_array[face_mask_array > 5] = 0  # Very low threshold to protect all face pixels (including ring edges)
+            # Ring shapes are fully protected by the expanded bounding box + dilation + smooth blur
+            # Smooth edges from Gaussian blur ensure natural transitions
+            mask_array[face_mask_array > 30] = 0  # Smooth threshold (30) to protect face pixels including smooth edges
             mask = Image.fromarray(mask_array, mode='L')
             
             # CRITICAL: Verify face is protected - MUST have ZERO white pixels in face
             # This includes ring-shaped detections anywhere in the image
-            face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
+            # Use smooth threshold (30) to match the protection threshold above
+            face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 30))
             if face_white_pixels > 0:
                 logger.error(f"❌ CRITICAL ERROR: {face_white_pixels} white pixels found in detected face area (including ring shapes)! Forcing to black...")
-                mask_array[face_mask_array > 5] = 0  # Force protect entire face region (including ring)
+                mask_array[face_mask_array > 30] = 0  # Force protect entire face region (including ring) with smooth threshold
                 # Verify again
-                face_white_pixels_after = np.sum((mask_array == 255) & (face_mask_array > 5))
+                face_white_pixels_after = np.sum((mask_array == 255) & (face_mask_array > 30))
                 if face_white_pixels_after == 0:
-                    logger.info("✅ Face protection verified - entire face area (including ring) is now completely black")
+                    logger.info("✅ Face protection verified - entire face area (including ring) is now completely black with smooth edges")
                 else:
                     logger.error(f"❌ ERROR: Still {face_white_pixels_after} white pixels in face after forced protection!")
                 mask = Image.fromarray(mask_array, mode='L')
             else:
-                logger.info("✅ Face protection verified - no white pixels in face area (including ring shapes)")
+                logger.info("✅ Face protection verified - no white pixels in face area (smooth edges, including ring shapes)")
             
             logger.info("✅ Applied face detection mask from ENTIRE image - face protected regardless of position (top/middle/bottom/body area, handles ring shapes)")
         else:
@@ -919,7 +949,7 @@ class ImageProcessor:
             # Use narrower width to follow person's body, not entire image
             if clothing_items.get('has_pants', False):
                 pants_top = int(height * 0.65)
-                pants_bottom = int(height * 0.95)  # Cover full pants area
+                pants_bottom = int(height * 0.97)  # Extended to 97% to allow waist/hips/trousers area to change (was 0.95)
                 pants_left = int(width * 0.20)  # Narrower to follow person (was 0.15)
                 pants_right = int(width * 0.80)  # Narrower to follow person (was 0.85)
                 draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
@@ -927,7 +957,7 @@ class ImageProcessor:
             else:
                 # Even if pants not detected, cover lower body area with narrow width
                 pants_top = int(height * 0.70)
-                pants_bottom = int(height * 0.92)
+                pants_bottom = int(height * 0.97)  # Extended to 97% to allow waist/hips/trousers area to change (was 0.92)
                 pants_left = int(width * 0.25)  # Narrower to follow person (was 0.20)
                 pants_right = int(width * 0.75)  # Narrower to follow person (was 0.80)
                 draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
@@ -939,15 +969,16 @@ class ImageProcessor:
             
             if face_mask is not None:
                 # Use detected face area - works regardless of face position
+                # Smooth edges from Gaussian blur ensure natural transitions
                 face_mask_array = np.array(face_mask)
-                mask_array[face_mask_array > 5] = 0  # Protect all detected face pixels
+                mask_array[face_mask_array > 30] = 0  # Smooth threshold (30) to protect all detected face pixels
                 mask = Image.fromarray(mask_array, mode='L')
                 
                 # Verify face is still protected
-                face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
+                face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 30))
                 if face_white_pixels > 0:
                     logger.error(f"⚠️  CRITICAL: {face_white_pixels} white pixels in face after geometric mask! Forcing protection...")
-                    mask_array[face_mask_array > 5] = 0  # Force protect
+                    mask_array[face_mask_array > 30] = 0  # Force protect with smooth threshold
                     mask = Image.fromarray(mask_array, mode='L')
                 
                 logger.info("✅ Re-applied face detection mask from ENTIRE image after geometric mask")
@@ -975,13 +1006,14 @@ class ImageProcessor:
             face_mask_array = np.array(face_mask)
             # Protect face area aggressively: any pixel that might be face = black (preserve)
             # This works for face at ANY position (top, middle, bottom)
-            mask_array[face_mask_array > 5] = 0  # Very low threshold to protect all face pixels
+            # Smooth edges from Gaussian blur ensure natural transitions
+            mask_array[face_mask_array > 30] = 0  # Smooth threshold (30) to protect all face pixels
             
             # Verify face is protected
-            face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
+            face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 30))
             if face_white_pixels > 0:
                 logger.error(f"⚠️  CRITICAL: {face_white_pixels} white pixels in face before blur! Forcing protection...")
-                mask_array[face_mask_array > 5] = 0  # Force protect
+                mask_array[face_mask_array > 30] = 0  # Force protect with smooth threshold
             
             logger.info("✅ Applied face detection mask from ENTIRE image before blur")
         else:
@@ -1004,8 +1036,9 @@ class ImageProcessor:
             face_mask_array = np.array(face_mask)
             # Final aggressive protection: any face pixel = black (0)
             # This protects entire face region including ring shapes anywhere in image
-            mask_array[face_mask_array > 5] = 0  # Very low threshold to ensure complete face protection (including ring edges)
-            logger.info("Applied final aggressive face protection after blur (protects entire face region including ring shapes)")
+            # Smooth edges from Gaussian blur ensure natural transitions
+            mask_array[face_mask_array > 30] = 0  # Smooth threshold (30) to ensure complete face protection with smooth edges
+            logger.info("Applied final aggressive face protection after blur (smooth edges, protects entire face region including ring shapes)")
         else:
             # Final fallback: protect top 20% of image
             face_protection_zone = int(height * 0.20)  # 20% face protection
@@ -1016,15 +1049,16 @@ class ImageProcessor:
         # Protect edges and corners (background is usually at edges)
         edge_protection = 0.03  # 3% from edges
         mask_array[:int(height * edge_protection), :] = 0  # Top edge (background)
-        mask_array[int(height * (1 - edge_protection)):, :] = 0  # Bottom edge (background/feet)
+        # REDUCED: Only protect very bottom (98-100%) for actual feet/shoes, not waist/hips area
+        mask_array[int(height * 0.98):, :] = 0  # Bottom 2% protected (feet/shoes only, not waist/hips)
         mask_array[:, :int(width * edge_protection)] = 0  # Left edge (background)
-        mask_array[:, int(width * (1 - edge_protection)):] = 0  # Right edge (background)
+        # REDUCED: Only protect very right edge (98-100%) to allow hands area to change
+        mask_array[:, int(width * 0.98):] = 0  # Right 2% protected (background only, not hands)
         
-        # Protect top 10% (face/head)
+        # Protect top 20% (face/head)
         mask_array[:int(height * 0.20), :] = 0  # Top 20% always protected (face/head)
-        # Protect very bottom (feet/shoes area)
-        mask_array[int(height * 0.95):, :] = 0  # Bottom 5% protected (feet/shoes)
-        logger.info("Applied additional protection for face, head, feet, and BACKGROUND EDGES")
+        # REMOVED: Bottom 5% protection - now only protecting 98-100% to allow waist/hips/trousers to change
+        logger.info("Applied additional protection for face, head, very bottom feet/shoes (98-100%), and BACKGROUND EDGES")
         
         mask = Image.fromarray(mask_array, mode='L')
         logger.info("Applied moderate edge smoothing to prevent blurred rectangle overlay artifacts")
@@ -1081,7 +1115,7 @@ class ImageProcessor:
         
         # Pants/Trousers region: from waist to just above shoes
         pants_top = int(height * 0.70)  # Start at waist (overlaps with shirt bottom)
-        pants_bottom = int(height * 0.92)  # End just above shoes/feet
+        pants_bottom = int(height * 0.97)  # Extended to 97% to allow waist/hips/trousers area to change (was 0.92)
         
         # Chest/shirt area (center torso) - EXPANDED width for full shirt coverage
         chest_left = int(width * 0.08)  # Left edge of shirt (wider - was 0.12)
@@ -1173,10 +1207,11 @@ class ImageProcessor:
             mask = Image.fromarray(mask_array, mode='L')
         
         # CRITICAL: Ensure background areas are black (preserved)
-        # Protect bottom area (shoes, feet, background)
+        # REDUCED: Only protect very bottom (98-100%) for actual feet/shoes, not waist/hips area
+        # This allows waist/hips/trousers area (around 70-97% of height) to be changed
         draw.rectangle(
-            [(0, pants_bottom), (width, height)],
-            fill=0  # Black = preserve shoes, feet, background
+            [(0, int(height * 0.98)), (width, height)],
+            fill=0  # Black = preserve only very bottom (feet/shoes), not waist/hips
         )
         
         # Protect top edge (background/sky) - 3% from top
@@ -1185,19 +1220,19 @@ class ImageProcessor:
             fill=0  # Black = preserve top background
         )
         
-        # Protect side margins (background) - 3% from each edge
+        # Protect side margins (background) - 3% from left edge only
         # Left margin
         draw.rectangle(
             [(0, 0), (int(width * 0.03), height)],
             fill=0  # Black = preserve left background
         )
-        # Right margin
+        # REDUCED: Only protect very right edge (98-100%) to allow hands area to change
         draw.rectangle(
-            [(int(width * 0.97), 0), (width, height)],
-            fill=0  # Black = preserve right background
+            [(int(width * 0.98), 0), (width, height)],
+            fill=0  # Black = preserve only very right edge (background), not hands area
         )
         
-        logger.info("✅ Background edges protected in geometric mask: top, bottom, left, right margins set to black")
+        logger.info("✅ Background edges protected in geometric mask: top, left, very bottom (98-100%), very right (98-100%) - waist/hips/trousers and hands areas can now change")
         
         # Convert to pure black/white (no gray pixels)
         # This ensures strict mask: white = change, black = preserve
