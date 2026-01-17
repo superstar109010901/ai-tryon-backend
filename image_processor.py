@@ -750,13 +750,11 @@ class ImageProcessor:
             
             # Method 1: Exclude edge regions (background is often at edges)
             edge_mask = np.zeros((height, width), dtype=bool)
-            edge_threshold = 0.03  # 3% from edges (reduced from 5%)
+            edge_threshold = 0.05  # 5% from edges
             edge_mask[:int(height * edge_threshold), :] = True  # Top edge
-            # REDUCED: Only exclude very bottom (98-100%) to allow waist/hips/trousers area to change
-            edge_mask[int(height * 0.98):, :] = True  # Very bottom only (was 95% onwards)
+            edge_mask[int(height * (1 - edge_threshold)):, :] = True  # Bottom edge
             edge_mask[:, :int(width * edge_threshold)] = True  # Left edge
-            # REDUCED: Only exclude very right edge (98-100%) to allow hands area to change
-            edge_mask[:, int(width * 0.98):] = True  # Very right edge only (was 95% onwards)
+            edge_mask[:, int(width * (1 - edge_threshold)):] = True  # Right edge
             
             # Method 2: Exclude low-saturation areas (background often less saturated)
             # Calculate saturation: max(R,G,B) - min(R,G,B)
@@ -772,11 +770,9 @@ class ImageProcessor:
             # Combine background detection methods
             background_mask = edge_mask | (low_saturation_mask & not_clothing_color)
             
-            # Remove face, head, AND background from clothing mask
-            # NOTE: Skin mask exclusion removed to allow hands/arms area to change when in clothing region
+            # Remove face, head, skin tones, AND background from clothing mask
             # This ensures we only mask clothing, not the person's body parts or background
-            # But allows hands/arms to be included if they're in the clothing area (as user requested)
-            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~background_mask)
+            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask) & (~background_mask)
             
             # Set clothing regions to white (255) - ONLY clothing, not person's body
             mask_array[clothing_mask] = 255
@@ -949,7 +945,7 @@ class ImageProcessor:
             # Use narrower width to follow person's body, not entire image
             if clothing_items.get('has_pants', False):
                 pants_top = int(height * 0.65)
-                pants_bottom = int(height * 0.97)  # Extended to 97% to allow waist/hips/trousers area to change (was 0.95)
+                pants_bottom = int(height * 0.95)  # Cover full pants area
                 pants_left = int(width * 0.20)  # Narrower to follow person (was 0.15)
                 pants_right = int(width * 0.80)  # Narrower to follow person (was 0.85)
                 draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
@@ -957,7 +953,7 @@ class ImageProcessor:
             else:
                 # Even if pants not detected, cover lower body area with narrow width
                 pants_top = int(height * 0.70)
-                pants_bottom = int(height * 0.97)  # Extended to 97% to allow waist/hips/trousers area to change (was 0.92)
+                pants_bottom = int(height * 0.92)
                 pants_left = int(width * 0.25)  # Narrower to follow person (was 0.20)
                 pants_right = int(width * 0.75)  # Narrower to follow person (was 0.80)
                 draw.rectangle([(pants_left, pants_top), (pants_right, pants_bottom)], fill=255)
@@ -1049,16 +1045,15 @@ class ImageProcessor:
         # Protect edges and corners (background is usually at edges)
         edge_protection = 0.03  # 3% from edges
         mask_array[:int(height * edge_protection), :] = 0  # Top edge (background)
-        # REDUCED: Only protect very bottom (98-100%) for actual feet/shoes, not waist/hips area
-        mask_array[int(height * 0.98):, :] = 0  # Bottom 2% protected (feet/shoes only, not waist/hips)
+        mask_array[int(height * (1 - edge_protection)):, :] = 0  # Bottom edge (background/feet)
         mask_array[:, :int(width * edge_protection)] = 0  # Left edge (background)
-        # REDUCED: Only protect very right edge (98-100%) to allow hands area to change
-        mask_array[:, int(width * 0.98):] = 0  # Right 2% protected (background only, not hands)
+        mask_array[:, int(width * (1 - edge_protection)):] = 0  # Right edge (background)
         
-        # Protect top 20% (face/head)
+        # Protect top 10% (face/head)
         mask_array[:int(height * 0.20), :] = 0  # Top 20% always protected (face/head)
-        # REMOVED: Bottom 5% protection - now only protecting 98-100% to allow waist/hips/trousers to change
-        logger.info("Applied additional protection for face, head, very bottom feet/shoes (98-100%), and BACKGROUND EDGES")
+        # Protect very bottom (feet/shoes area)
+        mask_array[int(height * 0.95):, :] = 0  # Bottom 5% protected (feet/shoes)
+        logger.info("Applied additional protection for face, head, feet, and BACKGROUND EDGES")
         
         mask = Image.fromarray(mask_array, mode='L')
         logger.info("Applied moderate edge smoothing to prevent blurred rectangle overlay artifacts")
@@ -1115,7 +1110,7 @@ class ImageProcessor:
         
         # Pants/Trousers region: from waist to just above shoes
         pants_top = int(height * 0.70)  # Start at waist (overlaps with shirt bottom)
-        pants_bottom = int(height * 0.97)  # Extended to 97% to allow waist/hips/trousers area to change (was 0.92)
+        pants_bottom = int(height * 0.92)  # End just above shoes/feet
         
         # Chest/shirt area (center torso) - EXPANDED width for full shirt coverage
         chest_left = int(width * 0.08)  # Left edge of shirt (wider - was 0.12)
@@ -1207,11 +1202,10 @@ class ImageProcessor:
             mask = Image.fromarray(mask_array, mode='L')
         
         # CRITICAL: Ensure background areas are black (preserved)
-        # REDUCED: Only protect very bottom (98-100%) for actual feet/shoes, not waist/hips area
-        # This allows waist/hips/trousers area (around 70-97% of height) to be changed
+        # Protect bottom area (shoes, feet, background)
         draw.rectangle(
-            [(0, int(height * 0.98)), (width, height)],
-            fill=0  # Black = preserve only very bottom (feet/shoes), not waist/hips
+            [(0, pants_bottom), (width, height)],
+            fill=0  # Black = preserve shoes, feet, background
         )
         
         # Protect top edge (background/sky) - 3% from top
@@ -1220,19 +1214,19 @@ class ImageProcessor:
             fill=0  # Black = preserve top background
         )
         
-        # Protect side margins (background) - 3% from left edge only
+        # Protect side margins (background) - 3% from each edge
         # Left margin
         draw.rectangle(
             [(0, 0), (int(width * 0.03), height)],
             fill=0  # Black = preserve left background
         )
-        # REDUCED: Only protect very right edge (98-100%) to allow hands area to change
+        # Right margin
         draw.rectangle(
-            [(int(width * 0.98), 0), (width, height)],
-            fill=0  # Black = preserve only very right edge (background), not hands area
+            [(int(width * 0.97), 0), (width, height)],
+            fill=0  # Black = preserve right background
         )
         
-        logger.info("✅ Background edges protected in geometric mask: top, left, very bottom (98-100%), very right (98-100%) - waist/hips/trousers and hands areas can now change")
+        logger.info("✅ Background edges protected in geometric mask: top, bottom, left, right margins set to black")
         
         # Convert to pure black/white (no gray pixels)
         # This ensures strict mask: white = change, black = preserve
