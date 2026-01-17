@@ -332,11 +332,11 @@ class VastAIClient:
                 "sampler_name": sampler_name,
                 "width": width,
                 "height": height,
-                "inpainting_fill": 0,  # 0 = latent_noise (allows full garment replacement for true try-on)
+                "inpainting_fill": 1,  # 1 = original (preserves original image better, especially face)
                 "inpaint_full_res": True,  # True for better quality
-                "inpaint_full_res_padding": 32,  # Padding for blending
+                "inpaint_full_res_padding": 16,  # Reduced padding to minimize face area impact
                 "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
-                "mask_blur": 6,  # Moderate blur for smooth edges
+                "mask_blur": 4,  # Reduced blur to minimize face area impact
             }
             
             # Add ControlNet using controlnet_units format with TWO units:

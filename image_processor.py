@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 
 # Static prompt for white clothing generation
 # Focus on white clothing that person is wearing
-STATIC_PROMPT = "man wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, same face, same body, same pose, same background, person visible, photorealistic, seamless integration, high detail"
+STATIC_PROMPT = "man wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, ORIGINAL FACE UNCHANGED, ORIGINAL FACE PRESERVED, EXACT SAME FACE, same body, same pose, same background, person visible, photorealistic, seamless integration, high detail"
 
-# Negative prompt - exclusion of unwanted elements
-NEGATIVE_PROMPT = "different person, face change, distorted face, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"
+# Negative prompt - STRONG exclusion of face changes
+NEGATIVE_PROMPT = "different person, face change, distorted face, changed face, altered face, face modification, face replacement, new face, different face, face editing, face transformation, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"
 
 
 
@@ -192,15 +192,34 @@ class ImageProcessor:
             logger.info(f"Using prompt: {prompt}")
             logger.info(f"Using negative prompt: {negative_prompt[:100]}...")
             
+            # CRITICAL: Final verification - ensure face is NEVER in mask
+            # Double-check that face area has ZERO white pixels
+            mask_array_final = np.array(mask)
+            if face_detection is not None:
+                try:
+                    face_mask_final = self.create_face_mask_from_detection(face_detection, image)
+                    face_mask_array_final = np.array(face_mask_final)
+                    face_white_pixels_final = np.sum((mask_array_final == 255) & (face_mask_array_final > 5))
+                    if face_white_pixels_final > 0:
+                        logger.error(f"❌ CRITICAL ERROR: {face_white_pixels_final} white pixels in face area before generation!")
+                        logger.error("   Forcing face area to black in mask...")
+                        mask_array_final[face_mask_array_final > 5] = 0  # Force protect face
+                        mask = Image.fromarray(mask_array_final, mode='L')
+                        logger.info("✅ Face area forced to black - face will be preserved")
+                    else:
+                        logger.info("✅ Face verification passed - no white pixels in face area")
+                except Exception as e:
+                    logger.warning(f"Could not verify face protection: {e}")
+            
             # Generate image with white clothing using img2img inpainting
-            # The mask determines which areas to replace (white = generate white clothes, black = preserve person)
+            # CRITICAL: Mask must have face area as BLACK (preserve), only clothing as WHITE (change)
             # Uses ControlNet to preserve person structure while generating realistic white clothing
             generated_image = await self.vast_ai_client.generate_img2img(
                 image=image,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                mask=mask,  # Mask for inpainting (white = generate white clothes, black = preserve person)
-                denoising_strength=0.50,  # Moderate strength to generate white clothes while preserving person
+                mask=mask,  # Mask for inpainting (white = generate white clothes, black = preserve face/person)
+                denoising_strength=0.40,  # Reduced from 0.50 to preserve face better
                 steps=30,  # More steps for better quality white clothing
                 cfg_scale=7,  # Higher guidance to ensure white clothing generation
                 sampler_name="DPM++ SDE",  # High quality sampler
@@ -210,7 +229,7 @@ class ImageProcessor:
                 controlnet_pose_weight=1.0,  # Strong pose preservation
                 controlnet_pose_control_mode="ControlNet is more important",  # Strong control
                 controlnet_inpaint_enabled=True,  # Use inpainting ControlNet for clothing generation
-                controlnet_inpaint_weight=0.6  # Moderate weight for clothing generation
+                controlnet_inpaint_weight=0.5  # Reduced weight to preserve face better
             )
             
             logger.info("✅ White clothing generation completed successfully - person is now wearing white clothes")
@@ -417,20 +436,20 @@ class ImageProcessor:
         
         # Threshold: bright areas are likely face
         # Face detection maps usually have high values where face is detected
-        # Use lower percentile to catch more face area
-        threshold = np.percentile(detection_gray, 50)  # Top 50% brightest = face area (was 70%, more aggressive)
+        # Use even lower percentile to catch more face area (more aggressive detection)
+        threshold = np.percentile(detection_gray, 40)  # Top 60% brightest = face area (lowered from 50% to catch more)
         face_mask_array = (detection_gray > threshold).astype(np.uint8) * 255
         
-        # Dilate the mask more aggressively to ensure full face, neck, and head coverage
+        # Dilate the mask even more aggressively to ensure full face, neck, and head coverage
         try:
             from scipy import ndimage
-            # Larger dilation structure for better coverage
-            face_mask_array = ndimage.binary_dilation(face_mask_array > 127, structure=np.ones((10, 10))).astype(np.uint8) * 255  # Increased from 5x5 to 10x10
+            # Even larger dilation structure for maximum coverage
+            face_mask_array = ndimage.binary_dilation(face_mask_array > 127, structure=np.ones((15, 15))).astype(np.uint8) * 255  # Increased from 10x10 to 15x15
         except ImportError:
             # If scipy not available, use PIL filters
             from PIL import ImageFilter
             face_mask_pil = Image.fromarray(face_mask_array, mode='L')
-            face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(10))  # Increased from 5 to 10
+            face_mask_pil = face_mask_pil.filter(ImageFilter.MaxFilter(15))  # Increased from 10 to 15
             face_mask_array = np.array(face_mask_pil)
         
         # CRITICAL: Do NOT add fixed percentage protection
@@ -749,8 +768,8 @@ class ImageProcessor:
                 face_mask = None
         
         # Fallback: Only use if face detection completely failed
-        # But this is less ideal - we prefer actual face detection
-        face_protection_fallback = int(height * 0.10) if face_mask is None else None
+        # Expanded to 15% for better face protection when detection fails
+        face_protection_fallback = int(height * 0.15) if face_mask is None else None
         
         # CRITICAL: Apply face protection to mask - MUST protect detected face completely
         # Face detection covers ENTIRE image, so it works regardless of face position
@@ -763,18 +782,26 @@ class ImageProcessor:
             mask_array[face_mask_array > 5] = 0  # Very low threshold to protect all face pixels
             mask = Image.fromarray(mask_array, mode='L')
             
-            # Verify face is protected
+            # CRITICAL: Verify face is protected - MUST have ZERO white pixels in face
             face_white_pixels = np.sum((mask_array == 255) & (face_mask_array > 5))
             if face_white_pixels > 0:
-                logger.error(f"⚠️  CRITICAL: {face_white_pixels} white pixels found in detected face area! Forcing to black...")
+                logger.error(f"❌ CRITICAL ERROR: {face_white_pixels} white pixels found in detected face area! Forcing to black...")
                 mask_array[face_mask_array > 5] = 0  # Force protect face
+                # Verify again
+                face_white_pixels_after = np.sum((mask_array == 255) & (face_mask_array > 5))
+                if face_white_pixels_after == 0:
+                    logger.info("✅ Face protection verified - face area is now completely black")
+                else:
+                    logger.error(f"❌ ERROR: Still {face_white_pixels_after} white pixels in face after forced protection!")
                 mask = Image.fromarray(mask_array, mode='L')
+            else:
+                logger.info("✅ Face protection verified - no white pixels in face area")
             
             logger.info("✅ Applied face detection mask from ENTIRE image - face protected regardless of position")
         else:
-            # Fallback: protect top 10% of image (only if face detection failed)
+            # Fallback: protect top 15% of image (only if face detection failed)
             mask_array = np.array(mask)
-            face_protection_zone = int(height * 0.10)  # Top 10% for face/head protection (fallback only)
+            face_protection_zone = int(height * 0.15)  # Top 15% for face/head protection (fallback only)
             mask_array[:face_protection_zone, :] = 0  # Black = preserve face
             mask = Image.fromarray(mask_array, mode='L')
             logger.warning(f"⚠️  Using fallback face protection (top {face_protection_zone*100/height:.1f}%) - face detection failed")
@@ -889,7 +916,7 @@ class ImageProcessor:
             logger.info("✅ Applied face detection mask from ENTIRE image before blur")
         else:
             # Fallback: only if face detection failed
-            face_protection_zone = int(height * 0.10)
+            face_protection_zone = int(height * 0.15)
             mask_array[:face_protection_zone, :] = 0
             logger.warning(f"⚠️  Applied fallback face protection (top {face_protection_zone*100/height:.1f}%) - face detection failed")
         
@@ -910,13 +937,13 @@ class ImageProcessor:
             logger.info("Applied final aggressive face protection after blur")
         else:
             # Final fallback: protect top 40% of image
-            face_protection_zone = int(height * 0.10)
+            face_protection_zone = int(height * 0.15)
             mask_array[:face_protection_zone, :] = 0
             logger.info(f"Applied final fallback face protection (top {face_protection_zone*100/height:.1f}%)")
         
         # Additional protection: Exclude hands and background areas
         # Protect bottom corners and edges (likely background or hands)
-        mask_array[:int(height * 0.10), :] = 0  # Top 40% always protected (face/head)
+        mask_array[:int(height * 0.15), :] = 0  # Top 15% always protected (face/head) - fallback safety
         # Protect very bottom (feet/shoes area)
         mask_array[int(height * 0.95):, :] = 0  # Bottom 5% protected (feet/shoes)
         logger.info("Applied additional protection for face, head, and feet areas")
@@ -966,7 +993,7 @@ class ImageProcessor:
         
         # Fallback: if face detection failed, use conservative top 20% protection
         # This is much smaller than before to allow shirt collar to be changed
-        face_protection_fallback = int(height * 0.10) if face_mask is None else None  # Increased to 40% for better face/head/neck protection
+        face_protection_fallback = int(height * 0.15) if face_mask is None else None  # Expanded to 15% for better face/head/neck protection when detection fails
         
         # CLOTHING REGION: Cover ALL clothes (shirt + pants)
         # Shirt region: start from very top to catch full shirt including collar
