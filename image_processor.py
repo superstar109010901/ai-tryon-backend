@@ -799,7 +799,7 @@ class ImageProcessor:
         
         # Fallback: Only use if face detection completely failed
         # But this is less ideal - we prefer actual face detection
-        face_protection_fallback = int(height * 0.10) if face_mask is None else None
+        face_protection_fallback = int(height * 0.20) if face_mask is None else None  # 20% face protection
         
         # CRITICAL: Apply face protection to mask - MUST protect detected face completely
         # Face detection covers ENTIRE image, so it works regardless of face position
@@ -829,9 +829,9 @@ class ImageProcessor:
             
             logger.info("✅ Applied face detection mask from ENTIRE image - face protected regardless of position")
         else:
-            # Fallback: protect top 10% of image (only if face detection failed)
+            # Fallback: protect top 20% of image (only if face detection failed)
             mask_array = np.array(mask)
-            face_protection_zone = int(height * 0.10)  # Top 10% for face/head protection (fallback only)
+            face_protection_zone = int(height * 0.20)  # Top 20% for face/head protection (fallback only)
             mask_array[:face_protection_zone, :] = 0  # Black = preserve face
             mask = Image.fromarray(mask_array, mode='L')
             logger.warning(f"⚠️  Using fallback face protection (top {face_protection_zone*100/height:.1f}%) - face detection failed")
@@ -864,7 +864,7 @@ class ImageProcessor:
             if clothing_items.get('has_shirt', True):
                 # Conservative shirt mask - only covers torso area, not entire image
                 # This prevents creating a large shirt instead of detecting person
-                shirt_top = int(height * 0.15)  # Start below face (15% from top)
+                shirt_top = int(height * 0.20)  # Start below face (20% from top)
                 shirt_bottom = int(height * 0.70)  # Stop at waist (70% from top)
                 # Narrower width to follow person's body, not entire image width
                 chest_left = int(width * 0.20)  # 20% from left (narrower - follows person)
@@ -946,7 +946,7 @@ class ImageProcessor:
             logger.info("✅ Applied face detection mask from ENTIRE image before blur")
         else:
             # Fallback: only if face detection failed
-            face_protection_zone = int(height * 0.10)
+            face_protection_zone = int(height * 0.20)  # 20% face protection
             mask_array[:face_protection_zone, :] = 0
             logger.warning(f"⚠️  Applied fallback face protection (top {face_protection_zone*100/height:.1f}%) - face detection failed")
         
@@ -966,8 +966,8 @@ class ImageProcessor:
             mask_array[face_mask_array > 5] = 0  # Very low threshold (was 20) to ensure complete face protection
             logger.info("Applied final aggressive face protection after blur")
         else:
-            # Final fallback: protect top 40% of image
-            face_protection_zone = int(height * 0.10)
+            # Final fallback: protect top 20% of image
+            face_protection_zone = int(height * 0.20)  # 20% face protection
             mask_array[:face_protection_zone, :] = 0
             logger.info(f"Applied final fallback face protection (top {face_protection_zone*100/height:.1f}%)")
         
@@ -980,7 +980,7 @@ class ImageProcessor:
         mask_array[:, int(width * (1 - edge_protection)):] = 0  # Right edge (background)
         
         # Protect top 10% (face/head)
-        mask_array[:int(height * 0.10), :] = 0  # Top 10% always protected (face/head)
+        mask_array[:int(height * 0.20), :] = 0  # Top 20% always protected (face/head)
         # Protect very bottom (feet/shoes area)
         mask_array[int(height * 0.95):, :] = 0  # Bottom 5% protected (feet/shoes)
         logger.info("Applied additional protection for face, head, feet, and BACKGROUND EDGES")
@@ -1030,12 +1030,12 @@ class ImageProcessor:
         
         # Fallback: if face detection failed, use conservative top 20% protection
         # This is much smaller than before to allow shirt collar to be changed
-        face_protection_fallback = int(height * 0.10) if face_mask is None else None  # Increased to 40% for better face/head/neck protection
+        face_protection_fallback = int(height * 0.20) if face_mask is None else None  # 20% face protection fallback
         
         # CLOTHING REGION: Cover ALL clothes (shirt + pants)
         # Shirt region: start from very top to catch full shirt including collar
         # We'll protect face area separately using detected face mask
-        shirt_top = int(height * 0.15)  # Start high to catch shirt collar (will be protected by face mask)
+        shirt_top = int(height * 0.20)  # Start below face protection (20% from top)
         shirt_bottom = int(height * 0.78)  # Extend lower to cover full shirt including untucked part
         
         # Pants/Trousers region: from waist to just above shoes
