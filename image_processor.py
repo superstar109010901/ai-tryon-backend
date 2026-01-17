@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 
 # Static prompt for white clothing generation
 # Focus on white clothing that person is wearing
-STATIC_PROMPT = "man wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, ORIGINAL FACE UNCHANGED, ORIGINAL FACE PRESERVED, EXACT SAME FACE, same body, same pose, same background, person visible, photorealistic, seamless integration, high detail"
+STATIC_PROMPT = "man wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, ORIGINAL FACE UNCHANGED, ORIGINAL FACE PRESERVED, EXACT SAME FACE, same body, same pose, EXACT SAME BACKGROUND, ORIGINAL BACKGROUND UNCHANGED, background preserved, same environment, person visible, photorealistic, seamless integration, high detail"
 
-# Negative prompt - STRONG exclusion of face changes
-NEGATIVE_PROMPT = "different person, face change, distorted face, changed face, altered face, face modification, face replacement, new face, different face, face editing, face transformation, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"
+# Negative prompt - STRONG exclusion of face changes AND background changes
+NEGATIVE_PROMPT = "different person, face change, distorted face, changed face, altered face, face modification, face replacement, new face, different face, face editing, face transformation, background change, changed background, different background, new background, background modification, background replacement, altered environment, different environment, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"
 
 
 
@@ -225,7 +225,7 @@ class ImageProcessor:
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 mask=mask,  # Mask for inpainting (white = generate white clothes, black = preserve face/person)
-                denoising_strength=0.40,  # Reduced from 0.50 to preserve face better
+                denoising_strength=0.55,  # Increased to ensure clothes change (background protected by mask)
                 steps=30,  # More steps for better quality white clothing
                 cfg_scale=7,  # Higher guidance to ensure white clothing generation
                 sampler_name="DPM++ SDE",  # High quality sampler
@@ -235,7 +235,7 @@ class ImageProcessor:
                 controlnet_pose_weight=1.0,  # Strong pose preservation
                 controlnet_pose_control_mode="ControlNet is more important",  # Strong control
                 controlnet_inpaint_enabled=True,  # Use inpainting ControlNet for clothing generation
-                controlnet_inpaint_weight=0.5  # Reduced weight to preserve face better
+                controlnet_inpaint_weight=0.7  # Increased to ensure clothes change (background protected by mask)
             )
             
             logger.info("✅ White clothing generation completed successfully - person is now wearing white clothes")
@@ -682,13 +682,37 @@ class ImageProcessor:
             # Skin tones: High R and G, medium B
             skin_mask = (r > 120) & (g > 100) & (b < r * 0.9) & (b < g * 0.9) & (r < 220) & (g < 200)
             
-            # Exclude background: Usually has different characteristics
-            # Background is often less saturated or has different color distribution
-            # For now, we'll rely on segmentation to exclude background
+            # CRITICAL: Exclude background explicitly
+            # Background detection: Usually has different characteristics
+            # 1. Background is often at edges/corners
+            # 2. Background has different color distribution (often less saturated)
+            # 3. Background pixels are usually NOT in clothing segmentation colors
             
-            # Remove face, head, and skin tones from clothing mask
-            # This ensures we only mask clothing, not the person's body parts
-            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask)
+            # Method 1: Exclude edge regions (background is often at edges)
+            edge_mask = np.zeros((height, width), dtype=bool)
+            edge_threshold = 0.05  # 5% from edges
+            edge_mask[:int(height * edge_threshold), :] = True  # Top edge
+            edge_mask[int(height * (1 - edge_threshold)):, :] = True  # Bottom edge
+            edge_mask[:, :int(width * edge_threshold)] = True  # Left edge
+            edge_mask[:, int(width * (1 - edge_threshold)):] = True  # Right edge
+            
+            # Method 2: Exclude low-saturation areas (background often less saturated)
+            # Calculate saturation: max(R,G,B) - min(R,G,B)
+            max_rgb = np.maximum(np.maximum(r, g), b)
+            min_rgb = np.minimum(np.minimum(r, g), b)
+            saturation = max_rgb - min_rgb
+            low_saturation_mask = saturation < 30  # Low saturation = likely background
+            
+            # Method 3: Exclude areas that are NOT in clothing color ranges
+            # If pixel is not red/pink (shirt), not blue (pants), and not in clothing mask, it's likely background
+            not_clothing_color = ~((r > 80) | (b > 80))  # Not red/pink and not blue
+            
+            # Combine background detection methods
+            background_mask = edge_mask | (low_saturation_mask & not_clothing_color)
+            
+            # Remove face, head, skin tones, AND background from clothing mask
+            # This ensures we only mask clothing, not the person's body parts or background
+            clothing_mask = clothing_mask & (~face_mask_seg) & (~head_region_mask) & (~skin_mask) & (~background_mask)
             
             # Set clothing regions to white (255) - ONLY clothing, not person's body
             mask_array[clothing_mask] = 255
@@ -947,12 +971,19 @@ class ImageProcessor:
             mask_array[:face_protection_zone, :] = 0
             logger.info(f"Applied final fallback face protection (top {face_protection_zone*100/height:.1f}%)")
         
-        # Additional protection: Exclude hands and background areas
-        # Protect bottom corners and edges (likely background or hands)
-        mask_array[:int(height * 0.10), :] = 0  # Top 40% always protected (face/head)
+        # CRITICAL: Additional protection - Exclude background areas
+        # Protect edges and corners (background is usually at edges)
+        edge_protection = 0.03  # 3% from edges
+        mask_array[:int(height * edge_protection), :] = 0  # Top edge (background)
+        mask_array[int(height * (1 - edge_protection)):, :] = 0  # Bottom edge (background/feet)
+        mask_array[:, :int(width * edge_protection)] = 0  # Left edge (background)
+        mask_array[:, int(width * (1 - edge_protection)):] = 0  # Right edge (background)
+        
+        # Protect top 10% (face/head)
+        mask_array[:int(height * 0.10), :] = 0  # Top 10% always protected (face/head)
         # Protect very bottom (feet/shoes area)
         mask_array[int(height * 0.95):, :] = 0  # Bottom 5% protected (feet/shoes)
-        logger.info("Applied additional protection for face, head, and feet areas")
+        logger.info("Applied additional protection for face, head, feet, and BACKGROUND EDGES")
         
         mask = Image.fromarray(mask_array, mode='L')
         logger.info("Applied moderate edge smoothing to prevent blurred rectangle overlay artifacts")
@@ -1100,21 +1131,32 @@ class ImageProcessor:
             mask_array[face_mask_array > 127] = 0  # Protect face area again
             mask = Image.fromarray(mask_array, mode='L')
         
-        # Ensure bottom area (shoes, feet, background) is black
+        # CRITICAL: Ensure background areas are black (preserved)
+        # Protect bottom area (shoes, feet, background)
         draw.rectangle(
             [(0, pants_bottom), (width, height)],
             fill=0  # Black = preserve shoes, feet, background
         )
         
-        # Ensure side margins (background) are black
+        # Protect top edge (background/sky) - 3% from top
         draw.rectangle(
-            [(0, 0), (shoulder_left, height)],
+            [(0, 0), (width, int(height * 0.03))],
+            fill=0  # Black = preserve top background
+        )
+        
+        # Protect side margins (background) - 3% from each edge
+        # Left margin
+        draw.rectangle(
+            [(0, 0), (int(width * 0.03), height)],
             fill=0  # Black = preserve left background
         )
+        # Right margin
         draw.rectangle(
-            [(shoulder_right, 0), (width, height)],
+            [(int(width * 0.97), 0), (width, height)],
             fill=0  # Black = preserve right background
         )
+        
+        logger.info("✅ Background edges protected in geometric mask: top, bottom, left, right margins set to black")
         
         # Convert to pure black/white (no gray pixels)
         # This ensures strict mask: white = change, black = preserve
