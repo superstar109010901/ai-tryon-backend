@@ -194,18 +194,24 @@ class ImageProcessor:
             
             # CRITICAL: Final verification - ensure face is NEVER in mask
             # Double-check that face area has ZERO white pixels
+            # BUT: Don't remove too much - we need clothing area to remain white
             mask_array_final = np.array(mask)
+            white_before_face_check = np.sum(mask_array_final == 255)
+            
             if face_detection is not None:
                 try:
                     face_mask_final = self.create_face_mask_from_detection(face_detection, image)
                     face_mask_array_final = np.array(face_mask_final)
                     face_white_pixels_final = np.sum((mask_array_final == 255) & (face_mask_array_final > 5))
                     if face_white_pixels_final > 0:
-                        logger.error(f"❌ CRITICAL ERROR: {face_white_pixels_final} white pixels in face area before generation!")
-                        logger.error("   Forcing face area to black in mask...")
+                        logger.warning(f"⚠️  {face_white_pixels_final} white pixels in face area before generation - removing ONLY face area")
+                        # Only remove face area, not entire top region
                         mask_array_final[face_mask_array_final > 5] = 0  # Force protect face
                         mask = Image.fromarray(mask_array_final, mode='L')
-                        logger.info("✅ Face area forced to black - face will be preserved")
+                        white_after_face_check = np.sum(mask_array_final == 255)
+                        logger.info(f"✅ Face area protected: {white_before_face_check} -> {white_after_face_check} white pixels remaining")
+                        if white_after_face_check < white_before_face_check * 0.5:
+                            logger.warning(f"⚠️  Face protection removed {white_before_face_check - white_after_face_check} pixels - mask might be too small now")
                     else:
                         logger.info("✅ Face verification passed - no white pixels in face area")
                 except Exception as e:
@@ -814,7 +820,7 @@ class ImageProcessor:
         
         # Only use geometric fallback if person is detected AND mask is too small
         use_geometric_fallback = False
-        if white_ratio < 0.05:  # Less than 5% white pixels - mask might be too small
+        if white_ratio < 0.10:  # Less than 10% white pixels - mask might be too small (increased from 5%)
             if person_detected:
                 logger.warning(f"Segmentation mask too small ({white_ratio*100:.1f}%), using conservative geometric mask (person detected)")
                 use_geometric_fallback = True
