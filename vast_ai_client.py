@@ -334,7 +334,7 @@ class VastAIClient:
                 "height": height,
                 "inpainting_fill": 0,  # 0 = latent_noise (allows clothes to change, was 1 which preserved too much)
                 "inpaint_full_res": True,  # True for better quality
-                "inpaint_full_res_padding": 24,  # Moderate padding for better blending
+                "inpaint_full_res_padding": 0,  # Moderate padding for better blending
                 "inpaint_area": 1,  # 1 = only masked area, 0 = whole picture
                 "mask_blur": 4,  # Moderate blur for smooth edges
             }
