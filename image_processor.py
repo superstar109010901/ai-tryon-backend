@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Static prompt for white clothing generation
 # Focus on white clothing that person is wearing
-STATIC_PROMPT = "woman without any clothes, no clothes, nude, realistic nude, same person, taking out all clothes, ORIGINAL FACE UNCHANGED, ORIGINAL FACE PRESERVED, EXACT SAME FACE, same body, same pose, EXACT SAME BACKGROUND, ORIGINAL BACKGROUND UNCHANGED, background preserved, same environment, person visible, photorealistic, seamless integration, high detail"
+STATIC_PROMPT = "woman without any clothes, no clothes, nude, realistic nude, natural flesh color skin, same person, taking out all clothes, ORIGINAL FACE UNCHANGED, ORIGINAL FACE PRESERVED, EXACT SAME FACE, same body, same pose, EXACT SAME BACKGROUND, ORIGINAL BACKGROUND UNCHANGED, background preserved, same environment, person visible, photorealistic, seamless integration, high detail"
 
 # Negative prompt - STRONG exclusion of face changes AND background changes
 NEGATIVE_PROMPT = "different person, face change, distorted face, changed face, altered face, face modification, face replacement, new face, different face, face editing, face transformation, background change, changed background, different background, new background, background modification, background replacement, altered environment, different environment, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"
@@ -567,7 +567,7 @@ class ImageProcessor:
         # Without "wearing", SDXL preserves original and places new shirt as separate object
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
-                "remove all clothes",
+                "remove all clothes", "natural flesh color skin",
                   "undress",  # FINAL FIX: "wearing" language (not "replaced with")
                 "nude", "natural skin", "realistic nude",
             ])
@@ -592,7 +592,7 @@ class ImageProcessor:
         # Pants: Current setup is already correct (per user feedback)
         if clothing_items.get('has_pants', False):  # Include pants if detected
             prompt_parts.extend([
-                "removing pants", "removing trousers",  # FINAL FIX: "wearing" language
+                "removing pants", "removing trousers","natural flesh color skin",  # FINAL FIX: "wearing" language
                 "without pants", "without trousers", "nude legs", "natural legs",
             ])
             negative_parts.extend([
