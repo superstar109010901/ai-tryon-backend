@@ -567,12 +567,12 @@ class ImageProcessor:
         # Without "wearing", SDXL preserves original and places new shirt as separate object
         if clothing_items.get('has_shirt', True):  # Default to True if not detected
             prompt_parts.extend([
-                "wearing a plain white shirt",  # FINAL FIX: "wearing" language (not "replaced with")
-                "plain white shirt", "white shirt",
-                "RGB(255,255,255)", "neutral white fabric"
+                "remove all clothes",
+                  "undress",  # FINAL FIX: "wearing" language (not "replaced with")
+                "nude", "natural skin", "realistic nude",
             ])
             negative_parts.extend([
-                "gray shirt", "black shirt", "colored shirt", 
+                "wearing clothes", "wearing shirt", "colored shirt", 
                 "dark shirt", "blue shirt", "red shirt", 
                 "charcoal shirt", "grey shirt", "dark grey shirt",
                 "hidden shirt", "obscured shirt", "covered shirt",
@@ -592,8 +592,8 @@ class ImageProcessor:
         # Pants: Current setup is already correct (per user feedback)
         if clothing_items.get('has_pants', False):  # Include pants if detected
             prompt_parts.extend([
-                "wearing white pants", "wearing white trousers",  # FINAL FIX: "wearing" language
-                "white pants", "white trousers", "white colored pants"
+                "removing pants", "removing trousers",  # FINAL FIX: "wearing" language
+                "without pants", "without trousers", "nude legs", "natural legs",
             ])
             negative_parts.extend([
                 "dark pants", "black pants", "gray pants", 
@@ -603,12 +603,11 @@ class ImageProcessor:
         # FINAL FIX: Remove preservation language - it interferes with "wearing" prompt
         # Keep only essential structure preservation via ControlNet (not prompts)
         prompt_parts.extend([
-            "wearing white clothing",  # FINAL FIX: "wearing" language for pants too
-            "RGB(255,255,255)", "neutral white fabric",
+            "remove clothing",
+              "undress",  # FINAL FIX: "wearing" language for pants too
             "white color clothing", "white colored fabric",
-            "natural fabric texture", "white fabric texture",
-            "clearly visible white colored clothing", "sharp white colored shirt", 
-            "crisp white colored fabric", "well-lit white colored clothing",
+            "realistic nude", "nude", 
+            "removing all clothes", "undressed woman",
             "no overlay", "no blur", "crisp image", "sharp image"
         ])
         
