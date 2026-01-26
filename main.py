@@ -4,7 +4,8 @@ This backend handles image uploads, sends them to Vast.ai Stable Diffusion API,
 and returns generated images with clothing replacement.
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+import re
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from contextlib import asynccontextmanager
@@ -12,12 +13,13 @@ import uvicorn
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add the backend directory to the path so we can import our modules
 sys.path.append(str(Path(__file__).parent))
 
 from image_processor import ImageProcessor
-from config import VAST_AI_SD_URL
+from config import VAST_AI_SD_URL, DATA_ROOT
 
 # Global image processor instance
 image_processor = None
@@ -84,6 +86,44 @@ app.add_middleware(
 )
 
 
+def _sanitize_username(s: str) -> str:
+    """Allow alphanumeric, underscore, hyphen. Default to 'anonymous' if empty/invalid."""
+    if not s or not isinstance(s, str):
+        return "anonymous"
+    out = re.sub(r"[^\w\-]", "", s.strip())[:64]
+    return out if out else "anonymous"
+
+
+def _sanitize_filename(s: str, default: str = "image.png") -> str:
+    """Use basename only, safe chars. Ensure an extension."""
+    if not s or not isinstance(s, str):
+        return default
+    name = os.path.basename(s.strip())
+    name = re.sub(r"[^\w.\-]", "_", name)
+    if not name:
+        return default
+    if "." not in name:
+        name = f"{name}.png"
+    return name
+
+
+def save_upload_to_undress(username: str, filename: str, data: bytes) -> Optional[Path]:
+    """
+    Save uploaded image copy to /data/images/$username/undress/$filename.ext.
+    Creates directory if needed. Returns path if saved, None on error.
+    """
+    try:
+        user = _sanitize_username(username)
+        fname = _sanitize_filename(filename)
+        base = Path(DATA_ROOT) / "images" / user / "undress"
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / fname
+        path.write_bytes(data)
+        return path
+    except Exception as e:
+        print(f"Warning: could not save upload to undress: {e}")
+        return None
+
 
 @app.get("/")
 async def root():
@@ -111,20 +151,23 @@ async def health_check():
 
 @app.post("/generate")
 async def generate_tryon(
-    file: UploadFile = File(..., description="Person image to process")
+    file: UploadFile = File(..., description="Person image to process"),
+    username: str = Form("anonymous", description="User identifier for saving uploads"),
 ):
     """
     Main endpoint for generating virtual try-on images.
     
     Process Flow:
     1. Frontend sends image (base64/binary)
-    2. Backend injects STATIC_PROMPT and fixed SD parameters
-    3. Backend calls Vast.ai SD API (img2img)
-    4. Stable Diffusion returns generated image
-    5. Backend returns image to frontend
+    2. Backend saves a copy to /data/images/$username/undress/$filename.ext
+    3. Backend injects STATIC_PROMPT and fixed SD parameters
+    4. Backend calls Vast.ai SD API (img2img)
+    5. Stable Diffusion returns generated image
+    6. Backend returns image to frontend
     
     Args:
         file: Uploaded image file (JPEG, PNG)
+        username: Optional. Used for upload path; defaults to "anonymous".
     
     Returns:
         JSON with generated image data or error message
@@ -136,6 +179,9 @@ async def generate_tryon(
         
         # Read uploaded image
         image_data = await file.read()
+        
+        # Save copy to /data/images/$username/undress/$filename.ext
+        save_upload_to_undress(username, file.filename or "image.png", image_data)
         
         # Validate image processor is initialized
         if image_processor is None:

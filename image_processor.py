@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Static prompt for white clothing generation
 # Focus on white clothing that person is wearing
-STATIC_PROMPT = "man wearing white cotton shirt, white button-up shirt, white long sleeves, clean white fabric, natural fabric folds, realistic white clothing, professional white attire, same person, ORIGINAL FACE UNCHANGED, ORIGINAL FACE PRESERVED, EXACT SAME FACE, same body, same pose, EXACT SAME BACKGROUND, ORIGINAL BACKGROUND UNCHANGED, background preserved, same environment, person visible, photorealistic, seamless integration, high detail"
+STATIC_PROMPT = "woman without any clothes, no clothes, nude, realistic nude, same person, taking out all clothes, ORIGINAL FACE UNCHANGED, ORIGINAL FACE PRESERVED, EXACT SAME FACE, same body, same pose, EXACT SAME BACKGROUND, ORIGINAL BACKGROUND UNCHANGED, background preserved, same environment, person visible, photorealistic, seamless integration, high detail"
 
 # Negative prompt - STRONG exclusion of face changes AND background changes
 NEGATIVE_PROMPT = "different person, face change, distorted face, changed face, altered face, face modification, face replacement, new face, different face, face editing, face transformation, background change, changed background, different background, new background, background modification, background replacement, altered environment, different environment, mannequin, jacket, hoodie, coat, logo, pattern, flat lay, catalog image, pasted clothing, visible seams, overlay, low quality, blur, gray shirt, black shirt, colored shirt, dark clothing"

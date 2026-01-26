@@ -35,3 +35,7 @@ CONTROLNET_WEIGHT = float(os.getenv("CONTROLNET_WEIGHT", "1.2"))  # Strong contr
 CONTROLNET_GUIDANCE_START = float(os.getenv("CONTROLNET_GUIDANCE_START", "0.0"))
 CONTROLNET_GUIDANCE_END = float(os.getenv("CONTROLNET_GUIDANCE_END", "0.9"))
 CONTROLNET_CONTROL_MODE = os.getenv("CONTROLNET_CONTROL_MODE", "Balanced")
+
+# Base directory for storing user uploads (e.g. /data/images/$username/undress/...)
+# Default "data" is relative to backend CWD; set DATA_ROOT=/data for production
+DATA_ROOT = os.getenv("DATA_ROOT", "data")
